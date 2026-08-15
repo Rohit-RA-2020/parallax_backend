@@ -53,6 +53,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /v1/projects/{id}", s.handleGetProject)
 		mux.HandleFunc("GET /v1/projects/{id}/media", s.handleListMedia)
 		mux.HandleFunc("POST /v1/projects/{id}/media", s.handleUploadMedia)
+		mux.HandleFunc("POST /v1/projects/{id}/export", s.handleExport)
 		mux.HandleFunc("GET /v1/projects/{id}/files/{path...}", s.handleProjectFile)
 		mux.HandleFunc("DELETE /v1/projects/{id}/files/{path...}", s.handleDeleteProjectFile)
 		mux.HandleFunc("GET /v1/projects/{id}/chats", s.handleListChats)

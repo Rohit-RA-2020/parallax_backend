@@ -83,6 +83,7 @@ scoped to that directory for the whole session.
 | `GET` | `/v1/projects/{id}` | Get a project and its media |
 | `GET` | `/v1/projects/{id}/media` | List uploaded and generated media |
 | `POST` | `/v1/projects/{id}/media` | Upload one or more multipart `files` |
+| `POST` | `/v1/projects/{id}/export` | Render a downloadable file (`mp4`, `mov`, `webm`, `gif`, `mp3`) |
 | `GET` | `/v1/projects/{id}/files/{path...}` | Stream a project file with range support |
 | `DELETE` | `/v1/projects/{id}/files/{path...}` | Remove a media file from the project |
 | `GET` | `/v1/projects/{id}/chats` | List persisted Director chats |

@@ -33,6 +33,7 @@ type Media struct {
 	Kind        string    `json:"kind"`
 	ContentType string    `json:"content_type"`
 	Bytes       int64     `json:"bytes"`
+	Duration    float64   `json:"duration,omitempty"`
 	ModifiedAt  time.Time `json:"modified_at"`
 }
 
@@ -186,7 +187,7 @@ func (s *Store) ListMedia(id string) ([]Media, error) {
 			return walkErr
 		}
 		if d.IsDir() {
-			if path != p.Dir && strings.HasPrefix(d.Name(), ".") {
+			if path != p.Dir && (strings.HasPrefix(d.Name(), ".") || d.Name() == "exports") {
 				return filepath.SkipDir
 			}
 			return nil
@@ -240,6 +241,42 @@ func (s *Store) ResolveFile(id, rel string) (string, error) {
 		return "", errors.New("media path escapes the project")
 	}
 	return real, nil
+}
+
+func (s *Store) PrepareExport(id, name, ext string) (Media, error) {
+	p, err := s.Get(id)
+	if err != nil {
+		return Media{}, err
+	}
+	name = safeName(name)
+	if name == "" {
+		name = "export"
+	}
+	if !strings.HasPrefix(ext, ".") {
+		ext = "." + ext
+	}
+	dir := filepath.Join(p.Dir, "exports")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return Media{}, err
+	}
+	abs := availablePath(dir, name+ext)
+	rel, err := filepath.Rel(p.Dir, abs)
+	if err != nil {
+		return Media{}, err
+	}
+	return Media{Name: filepath.Base(abs), Path: filepath.ToSlash(rel)}, nil
+}
+
+func (s *Store) StatFile(id, rel string) (Media, error) {
+	p, err := s.Get(id)
+	if err != nil {
+		return Media{}, err
+	}
+	full, err := s.ResolveFile(id, rel)
+	if err != nil {
+		return Media{}, err
+	}
+	return mediaFromFile(p.Dir, full)
 }
 
 func (s *Store) DeleteFile(id, rel string) error {

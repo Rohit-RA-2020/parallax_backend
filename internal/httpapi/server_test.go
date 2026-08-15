@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -138,6 +139,65 @@ func TestProjectUploadAndServe(t *testing.T) {
 	}
 	if len(listed.Media) != 0 {
 		t.Fatalf("listed=%+v", listed)
+	}
+}
+
+func TestExportRendersMP4(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	s := testServer(t, fakeProvider{})
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	project, err := s.Projects.Create("Export")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(project.Dir, "media", "clip.mp4")
+	cmd := exec.Command("ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=16x16:d=0.2", "-pix_fmt", "yuv420p", src)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("seed clip: %s %s", err, out)
+	}
+	body := `{"source":"media/clip.mp4","format":"mp4","quality":"draft","resolution":"source","audio":false,"filename":"out"}`
+	resp, err := http.Post(ts.URL+"/v1/projects/"+project.ID+"/export", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("%s %s", resp.Status, raw)
+	}
+	var got struct {
+		Media struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+		} `json:"media"`
+		DownloadURL string `json:"download_url"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Media.Path != "exports/out.mp4" || got.DownloadURL == "" {
+		t.Fatalf("export=%+v", got)
+	}
+}
+
+func TestExportRequiresSource(t *testing.T) {
+	s := testServer(t, fakeProvider{})
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	project, err := s.Projects.Create("Export")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(ts.URL+"/v1/projects/"+project.ID+"/export", "application/json", strings.NewReader(`{"format":"mp4"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d", resp.StatusCode)
 	}
 }
 

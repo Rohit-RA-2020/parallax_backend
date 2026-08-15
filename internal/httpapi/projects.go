@@ -1,15 +1,19 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"parallax/internal/ffmpeg"
 	"parallax/internal/projects"
 )
 
@@ -64,6 +68,7 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.attachDurations(p.ID, media)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project": projectResponse{Project: p, MediaCount: len(media)},
 		"media":   mediaResponses(p.ID, media),
@@ -77,6 +82,7 @@ func (s *Server) handleListMedia(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, err)
 		return
 	}
+	s.attachDurations(id, media)
 	writeJSON(w, http.StatusOK, map[string]any{"media": mediaResponses(id, media)})
 }
 
@@ -118,6 +124,7 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "no media files were uploaded")
 		return
 	}
+	s.attachDurations(id, uploaded)
 	writeJSON(w, http.StatusCreated, map[string]any{"media": mediaResponses(id, uploaded)})
 }
 
@@ -140,8 +147,13 @@ func (s *Server) handleProjectFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	w.Header().Set("Content-Disposition", `inline; filename="`+strings.ReplaceAll(filepath.Base(full), `"`, "")+`"`)
-	w.Header().Set("Cache-Control", "private, no-cache")
+	filename := strings.ReplaceAll(filepath.Base(full), `"`, "")
+	disposition := "inline"
+	if r.URL.Query().Get("download") == "1" {
+		disposition = "attachment"
+	}
+	w.Header().Set("Content-Disposition", disposition+`; filename="`+filename+`"`)
+	w.Header().Set("Cache-Control", "no-store")
 	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 }
 
@@ -248,11 +260,34 @@ func mediaResponses(projectID string, media []projects.Media) []mediaResponse {
 	for _, item := range media {
 		u := projectFileURL(projectID, item.Path)
 		if !item.ModifiedAt.IsZero() {
-			u += "?t=" + url.QueryEscape(item.ModifiedAt.UTC().Format("20060102150405"))
+			u += "?t=" + url.QueryEscape(fmt.Sprintf("%d-%d", item.ModifiedAt.UnixMilli(), item.Bytes))
 		}
 		out = append(out, mediaResponse{Media: item, ContentURL: u})
 	}
 	return out
+}
+
+func (s *Server) attachDurations(projectID string, media []projects.Media) {
+	if len(media) == 0 {
+		return
+	}
+	project, err := s.Projects.Get(projectID)
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	for i := range media {
+		kind := media[i].Kind
+		if kind != "video" && kind != "audio" {
+			continue
+		}
+		d, err := ffmpeg.ProbeDuration(ctx, s.Bins, project.Dir, media[i].Path)
+		if err != nil || d <= 0 {
+			continue
+		}
+		media[i].Duration = d
+	}
 }
 
 func writeProjectError(w http.ResponseWriter, err error) {
