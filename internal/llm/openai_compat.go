@@ -243,6 +243,7 @@ func truncate(s string, n int) string {
 func AssembleToolCalls(deltas []ToolCallDelta) []ToolCall {
 	type acc struct {
 		id, typ, name, args string
+		extra               json.RawMessage
 	}
 	byIdx := map[int]*acc{}
 	var order []int
@@ -265,6 +266,9 @@ func AssembleToolCalls(deltas []ToolCallDelta) []ToolCall {
 		if d.Function.Arguments != "" {
 			a.args += d.Function.Arguments
 		}
+		if len(d.ExtraContent) > 0 {
+			a.extra = append(a.extra[:0], d.ExtraContent...)
+		}
 	}
 	out := make([]ToolCall, 0, len(order))
 	for _, idx := range order {
@@ -273,8 +277,9 @@ func AssembleToolCalls(deltas []ToolCallDelta) []ToolCall {
 			continue
 		}
 		out = append(out, ToolCall{
-			ID:   a.id,
-			Type: a.typ,
+			ID:           a.id,
+			Type:         a.typ,
+			ExtraContent: a.extra,
 			Function: FunctionCall{
 				Name:      a.name,
 				Arguments: a.args,

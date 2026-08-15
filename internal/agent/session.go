@@ -12,6 +12,7 @@ import (
 // Session is one conversation plus its tool-call history.
 type Session struct {
 	ID        string        `json:"id"`
+	ProjectID string        `json:"project_id,omitempty"`
 	Messages  []llm.Message `json:"messages"`
 	UpdatedAt time.Time     `json:"updated_at"`
 }
@@ -27,15 +28,20 @@ func NewStore() *Store {
 }
 
 func (s *Store) GetOrCreate(id string) *Session {
+	return s.GetOrCreateForProject(id, "")
+}
+
+func (s *Store) GetOrCreateForProject(id, projectID string) *Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if id != "" {
-		if sess, ok := s.data[id]; ok {
+		if sess, ok := s.data[id]; ok && sess.ProjectID == projectID {
 			return sess
 		}
 	}
 	sess := &Session{
 		ID:        newID(),
+		ProjectID: projectID,
 		Messages:  []llm.Message{{Role: llm.RoleSystem, Content: systemPrompt}},
 		UpdatedAt: time.Now(),
 	}

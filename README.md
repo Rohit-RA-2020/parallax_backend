@@ -2,7 +2,8 @@
 
 Go service for the Parallax media agent. A user describes a video/audio/image task; a framework-free agent loop streams a plan, calls tools, runs **ffmpeg/ffprobe** in a workspace sandbox, and keeps going until the job is done.
 
-The frontend is not wired yet. Talk to the API directly.
+The React frontend is wired to this service for projects, uploads, project media,
+and streamed Director sessions.
 
 ## Design
 
@@ -51,9 +52,15 @@ GET `/v1/settings` returns a **masked** key. Sending the masked value back on PU
 Examples of other providers (same three fields):
 
 - OpenAI: `https://api.openai.com/v1` + `gpt-4.1`
+- Gemini: `https://generativelanguage.googleapis.com/v1beta/openai` + a Gemini model
 - Groq: `https://api.groq.com/openai/v1`
 - OpenRouter: `https://openrouter.ai/api/v1`
 - Ollama: `http://127.0.0.1:11434/v1`
+
+Gemini thinking-model tool calls include
+`extra_content.google.thought_signature`. Parallax preserves that field and
+returns it unchanged during sequential and parallel tool-calling steps, as
+required by Gemini's OpenAI-compatible API.
 
 ## Run
 
@@ -63,14 +70,31 @@ cp .env.example .env   # then put a key in LLM_API_KEY or XAI_API_KEY
 go run ./cmd/server
 ```
 
-Drop media into `./workspace`. The agent can only read and write that directory.
+Create projects from the frontend and upload media there. Each project gets an
+isolated directory under `./workspace/projects/<project-id>`; Director tools are
+scoped to that directory for the whole session.
+
+## Project and media API
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `GET` | `/v1/projects` | List persistent projects |
+| `POST` | `/v1/projects` | Create a project with `{"name":"…"}` |
+| `GET` | `/v1/projects/{id}` | Get a project and its media |
+| `GET` | `/v1/projects/{id}/media` | List uploaded and generated media |
+| `POST` | `/v1/projects/{id}/media` | Upload one or more multipart `files` |
+| `GET` | `/v1/projects/{id}/files/{path...}` | Stream a project file with range support |
+
+Include `project_id` in `/v1/agent/chat` requests. The agent will only see and
+operate on files inside that project's workspace. New FFmpeg outputs appear in
+the project's media list after the operation.
 
 ## Chat (SSE)
 
 ```bash
 curl -N localhost:8080/v1/agent/chat \
   -H 'content-type: application/json' \
-  -d '{"message":"strip audio from talk.mp4 and write talk_muted.mp4"}'
+  -d '{"project_id":"PROJECT_ID","message":"strip audio from media/talk.mp4 and write talk_muted.mp4"}'
 ```
 
 Events:

@@ -145,12 +145,12 @@ func validatePath(val, workspace string, allowNet bool) error {
 	switch {
 	case strings.HasPrefix(lower, "pipe:"), val == "-":
 		return fmt.Errorf("pipe inputs/outputs are not allowed")
-	case strings.Contains(lower, "://"):
+	case hasProtocol(val):
 		u, err := url.Parse(val)
 		if err != nil {
 			return fmt.Errorf("invalid URL %q", val)
 		}
-		if !allowNet {
+		if !allowNet || !strings.Contains(lower, "://") {
 			return fmt.Errorf("network input %q is disabled", val)
 		}
 		switch u.Scheme {
@@ -165,8 +165,37 @@ func validatePath(val, workspace string, allowNet bool) error {
 	if err != nil {
 		return err
 	}
-	_ = abs
-	return nil
+	return verifyRealPath(workspace, abs)
+}
+
+func hasProtocol(val string) bool {
+	u, err := url.Parse(val)
+	return err == nil && u.Scheme != ""
+}
+
+// verifyRealPath follows existing symlinks, including symlinked parent
+// directories for outputs that do not exist yet.
+func verifyRealPath(workspace, full string) error {
+	realWorkspace, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		return err
+	}
+	probe := full
+	for {
+		real, evalErr := filepath.EvalSymlinks(probe)
+		if evalErr == nil {
+			rel, relErr := filepath.Rel(realWorkspace, real)
+			if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("path escapes the workspace through a symlink")
+			}
+			return nil
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			return evalErr
+		}
+		probe = parent
+	}
 }
 
 func validateFilterGraph(graph, workspace string) error {

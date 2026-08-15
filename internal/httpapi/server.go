@@ -9,7 +9,9 @@ import (
 
 	"parallax/internal/agent"
 	"parallax/internal/config"
+	"parallax/internal/ffmpeg"
 	"parallax/internal/llm"
+	"parallax/internal/projects"
 	"parallax/internal/tools"
 )
 
@@ -22,6 +24,8 @@ type Server struct {
 	Settings  *config.Store
 	Sessions  *agent.Store
 	Tools     *tools.Registry
+	Bins      ffmpeg.Bins
+	Projects  *projects.Store
 	NewLLM    ProviderFactory
 	MaxIters  int
 	Logger    *slog.Logger
@@ -43,6 +47,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/agent/chat", s.handleChat)
 	mux.HandleFunc("GET /v1/sessions/{id}", s.handleGetSession)
 	mux.HandleFunc("DELETE /v1/sessions/{id}", s.handleDeleteSession)
+	if s.Projects != nil {
+		mux.HandleFunc("GET /v1/projects", s.handleListProjects)
+		mux.HandleFunc("POST /v1/projects", s.handleCreateProject)
+		mux.HandleFunc("GET /v1/projects/{id}", s.handleGetProject)
+		mux.HandleFunc("GET /v1/projects/{id}/media", s.handleListMedia)
+		mux.HandleFunc("POST /v1/projects/{id}/media", s.handleUploadMedia)
+		mux.HandleFunc("GET /v1/projects/{id}/files/{path...}", s.handleProjectFile)
+	}
 	return withCORS(withLog(s.log(), mux))
 }
 
@@ -76,6 +88,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 
 type chatRequest struct {
 	SessionID string        `json:"session_id"`
+	ProjectID string        `json:"project_id"`
 	Message   string        `json:"message"`
 	Messages  []llm.Message `json:"messages"`
 }
@@ -99,7 +112,26 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess := s.Sessions.GetOrCreate(req.SessionID)
+	toolRegistry := s.Tools
+	if strings.TrimSpace(req.ProjectID) != "" {
+		if s.Projects == nil {
+			writeError(w, http.StatusBadRequest, "projects are not configured")
+			return
+		}
+		project, err := s.Projects.Get(req.ProjectID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "project not found")
+			return
+		}
+		toolRegistry = tools.NewRegistry()
+		tools.RegisterMedia(toolRegistry, tools.MediaEnv{Workspace: project.Dir, Bins: s.Bins})
+	}
+	if toolRegistry == nil {
+		writeError(w, http.StatusInternalServerError, "media tools are not configured")
+		return
+	}
+
+	sess := s.Sessions.GetOrCreateForProject(req.SessionID, strings.TrimSpace(req.ProjectID))
 	msgs := append([]llm.Message(nil), sess.Messages...)
 	if len(req.Messages) > 0 {
 		// Caller-supplied history replaces the conversation but keeps the system prompt.
@@ -138,7 +170,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	ag := &agent.Agent{
 		Provider: provider,
-		Tools:    s.Tools,
+		Tools:    toolRegistry,
 		MaxIters: s.MaxIters,
 		Logger:   s.log(),
 	}
@@ -149,6 +181,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		_ = stream.Event(ev)
 	})
 	s.Sessions.ReplaceMessages(sess.ID, out.Messages)
+	if strings.TrimSpace(req.ProjectID) != "" {
+		_ = s.Projects.Touch(req.ProjectID)
+	}
 }
 
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {

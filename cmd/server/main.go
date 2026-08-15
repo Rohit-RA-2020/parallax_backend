@@ -14,6 +14,7 @@ import (
 	"parallax/internal/ffmpeg"
 	"parallax/internal/httpapi"
 	"parallax/internal/llm"
+	"parallax/internal/projects"
 	"parallax/internal/tools"
 )
 
@@ -35,12 +36,22 @@ func main() {
 			FFprobe: cfg.FFprobeBin,
 		},
 	})
+	projectStore, err := projects.NewStore(cfg.WorkspaceDir + "/projects")
+	if err != nil {
+		log.Error("projects", "err", err)
+		os.Exit(1)
+	}
 
 	srv := &httpapi.Server{
-		Addr:      cfg.Addr,
-		Settings:  config.NewStore(cfg.SettingsPath, cfg.LLM),
-		Sessions:  agent.NewStore(),
-		Tools:     reg,
+		Addr:     cfg.Addr,
+		Settings: config.NewStore(cfg.SettingsPath, cfg.LLM),
+		Sessions: agent.NewStore(),
+		Tools:    reg,
+		Bins: ffmpeg.Bins{
+			FFmpeg:  cfg.FFmpegBin,
+			FFprobe: cfg.FFprobeBin,
+		},
+		Projects:  projectStore,
 		MaxIters:  cfg.MaxIters,
 		Logger:    log,
 		Workspace: cfg.WorkspaceDir,

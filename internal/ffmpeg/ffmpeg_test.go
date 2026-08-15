@@ -53,6 +53,19 @@ func TestValidateSandbox(t *testing.T) {
 	if _, err := Validate([]string{"ffmpeg", "-i", "https://evil.example/a.mp4", "out.mp4"}, opts); err == nil {
 		t.Fatal("network input accepted")
 	}
+	if _, err := Validate([]string{"ffmpeg", "-i", "file:/etc/passwd", "out.mp4"}, opts); err == nil {
+		t.Fatal("file protocol escape accepted")
+	}
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.mp4"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.mp4"), filepath.Join(ws, "escape.mp4")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Validate([]string{"ffmpeg", "-i", "escape.mp4", "out.mp4"}, opts); err == nil {
+		t.Fatal("symlink escape accepted")
+	}
 
 	cmd, err := Validate([]string{"ffmpeg", "-y", "-i", "in.mp4", "-c", "copy", "out.mp4"}, opts)
 	if err != nil {

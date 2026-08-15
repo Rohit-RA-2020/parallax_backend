@@ -26,9 +26,10 @@ type Message struct {
 
 // ToolCall is a completed function invocation requested by the model.
 type ToolCall struct {
-	ID       string       `json:"id"`
-	Type     string       `json:"type"`
-	Function FunctionCall `json:"function"`
+	ID           string          `json:"id"`
+	Type         string          `json:"type"`
+	Function     FunctionCall    `json:"function"`
+	ExtraContent json.RawMessage `json:"extra_content,omitempty"`
 }
 
 type FunctionCall struct {
@@ -79,10 +80,11 @@ type Delta struct {
 // OpenAI streams name/arguments across many chunks; xAI may emit the whole
 // call in a single chunk. The agent accumulates either shape.
 type ToolCallDelta struct {
-	Index    int    `json:"index"`
-	ID       string `json:"id,omitempty"`
-	Type     string `json:"type,omitempty"`
-	Function struct {
+	Index        int             `json:"index"`
+	ID           string          `json:"id,omitempty"`
+	Type         string          `json:"type,omitempty"`
+	ExtraContent json.RawMessage `json:"extra_content,omitempty"`
+	Function     struct {
 		Name      string `json:"name,omitempty"`
 		Arguments string `json:"arguments,omitempty"`
 	} `json:"function"`
