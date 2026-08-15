@@ -18,6 +18,12 @@ type ExportSpec struct {
 	Duration   float64
 }
 
+const SequenceSource = "sequence"
+
+func (s ExportSpec) IsSequence() bool {
+	return strings.EqualFold(strings.TrimSpace(s.Source), SequenceSource)
+}
+
 func (s *ExportSpec) Normalize() error {
 	s.Source = strings.TrimSpace(s.Source)
 	if s.Source == "" {
@@ -73,6 +79,9 @@ func (s ExportSpec) Ext() string {
 }
 
 func (s ExportSpec) copyStreams() bool {
+	if s.IsSequence() {
+		return false
+	}
 	if s.Format != "mp4" && s.Format != "mov" {
 		return false
 	}

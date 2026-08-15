@@ -57,14 +57,20 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if _, err := s.Projects.ResolveFile(id, spec.Source); err != nil {
-		writeProjectError(w, err)
-		return
+	if !spec.IsSequence() {
+		if _, err := s.Projects.ResolveFile(id, spec.Source); err != nil {
+			writeProjectError(w, err)
+			return
+		}
 	}
 
 	filename := strings.TrimSpace(body.Filename)
 	if filename == "" {
-		filename = strings.TrimSuffix(filepath.Base(spec.Source), filepath.Ext(spec.Source)) + "-export"
+		if spec.IsSequence() {
+			filename = "sequence-export"
+		} else {
+			filename = strings.TrimSuffix(filepath.Base(spec.Source), filepath.Ext(spec.Source)) + "-export"
+		}
 	}
 	planned, err := s.Projects.PrepareExport(id, filename, spec.Ext())
 	if err != nil {
@@ -72,10 +78,24 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	args, err := ffmpeg.BuildExportArgs(spec, planned.Path)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+	var args []string
+	if spec.IsSequence() {
+		timeline, err := s.Projects.GetTimeline(id)
+		if err != nil {
+			writeProjectError(w, err)
+			return
+		}
+		args, err = ffmpeg.BuildSequenceArgs(spec, sequenceClips(timeline), planned.Path)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	} else {
+		args, err = ffmpeg.BuildExportArgs(spec, planned.Path)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	cmd, err := ffmpeg.Validate(args, ffmpeg.ValidateOpts{Workspace: project.Dir})
 	if err != nil {
@@ -102,6 +122,28 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		"media":        item,
 		"download_url": item.ContentURL + downloadQuery(item.ContentURL),
 	})
+}
+
+func sequenceClips(doc projects.Timeline) []ffmpeg.SequenceClip {
+	fps := doc.FPS
+	if fps < 1 {
+		fps = 24
+	}
+	rate := float64(fps)
+	out := make([]ffmpeg.SequenceClip, 0, len(doc.Clips))
+	for _, clip := range doc.Clips {
+		out = append(out, ffmpeg.SequenceClip{
+			Track:     clip.Track,
+			Kind:      clip.Kind,
+			Path:      clip.MediaPath,
+			Name:      clip.Name,
+			MediaType: clip.MediaType,
+			Start:     float64(clip.StartFrame) / rate,
+			Duration:  float64(clip.DurationFrames) / rate,
+			SourceIn:  float64(clip.SourceInFrame) / rate,
+		})
+	}
+	return out
 }
 
 func downloadQuery(contentURL string) string {
