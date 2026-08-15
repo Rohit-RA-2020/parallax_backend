@@ -78,26 +78,32 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.Settings.Get().Masked())
+	writeJSON(w, http.StatusOK, s.Settings.Public())
 }
 
 func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
-	var body config.LLM
+	var body struct {
+		ActiveID string `json:"active_id"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	updated, err := s.Settings.Update(body)
-	if err != nil {
+	if strings.TrimSpace(body.ActiveID) == "" {
+		writeError(w, http.StatusBadRequest, "active_id is required")
+		return
+	}
+	if _, err := s.Settings.Select(body.ActiveID); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, updated.Masked())
+	writeJSON(w, http.StatusOK, s.Settings.Public())
 }
 
 type chatRequest struct {
 	SessionID string        `json:"session_id"`
 	ProjectID string        `json:"project_id"`
+	ProfileID string        `json:"profile_id"`
 	Message   string        `json:"message"`
 	Messages  []llm.Message `json:"messages"`
 }
@@ -115,7 +121,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	llmCfg := s.Settings.Get()
+	llmCfg, err := s.Settings.GetByID(req.ProfileID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := config.ValidateLLM(llmCfg); err != nil {
 		writeError(w, http.StatusFailedDependency, "LLM is not configured: "+err.Error())
 		return

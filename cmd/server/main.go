@@ -44,7 +44,7 @@ func main() {
 
 	srv := &httpapi.Server{
 		Addr:     cfg.Addr,
-		Settings: config.NewStore(cfg.SettingsPath, cfg.LLM),
+		Settings: config.NewStore(cfg.SettingsPath, cfg.LLMs),
 		Sessions: agent.NewStore(),
 		Tools:    reg,
 		Bins: ffmpeg.Bins{

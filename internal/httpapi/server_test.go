@@ -42,11 +42,12 @@ func testServer(t *testing.T, p llm.ChatProvider) *Server {
 		t.Fatal(err)
 	}
 	return &Server{
-		Settings: config.NewStore(filepath.Join(dir, "settings.json"), config.LLM{
+		Settings: config.NewStore(filepath.Join(dir, "settings.json"), []config.LLM{{
+			ID:      "default",
 			BaseURL: config.DefaultBaseURL,
 			APIKey:  "test-key",
 			Model:   config.DefaultModel,
-		}),
+		}}),
 		Sessions:  agent.NewStore(),
 		Tools:     reg,
 		Projects:  projectStore,
@@ -224,16 +225,45 @@ func TestHealthAndSettings(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&pub); err != nil {
 		t.Fatal(err)
 	}
-	if !pub.APIKeySet || strings.Contains(pub.APIKey, "test-key") {
-		t.Fatalf("key leak or unset: %+v", pub)
+	if !pub.APIKeySet || len(pub.Profiles) != 1 {
+		t.Fatalf("expected seeded profile, got %+v", pub)
 	}
 
-	body, _ := json.Marshal(config.LLM{
-		BaseURL: "https://api.openai.com/v1",
-		Model:   "gpt-4.1",
-		APIKey:  pub.APIKey, // masked — should keep existing
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/v1/settings", strings.NewReader(`{"base_url":"https://api.openai.com/v1","model":"gpt-4.1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected put without active_id to fail, got %s", resp.Status)
+	}
+}
+
+func TestSettingsSelectsEnvModel(t *testing.T) {
+	s := testServer(t, fakeProvider{})
+	s.Settings = config.NewStore(filepath.Join(t.TempDir(), "settings.json"), []config.LLM{
+		{ID: "xai", Label: "Grok", BaseURL: "https://api.x.ai/v1", APIKey: "xai-secret", Model: "grok-4.6"},
+		{ID: "openai", Label: "GPT", BaseURL: "https://api.openai.com/v1", APIKey: "sk-secret", Model: "gpt-4.1"},
 	})
-	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/v1/settings", bytes.NewReader(body))
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/v1/settings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var pub config.Public
+	if err := json.NewDecoder(resp.Body).Decode(&pub); err != nil {
+		t.Fatal(err)
+	}
+	if pub.ActiveID != "xai" || len(pub.Profiles) != 2 {
+		t.Fatalf("public=%+v", pub)
+	}
+
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/v1/settings", strings.NewReader(`{"active_id":"openai"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -241,14 +271,53 @@ func TestHealthAndSettings(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(resp.Body)
-		t.Fatalf("%s %s", resp.Status, b)
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("select %s %s", resp.Status, raw)
 	}
-	if s.Settings.Get().APIKey != "test-key" {
-		t.Fatal("masked put overwrote key")
+	if err := json.NewDecoder(resp.Body).Decode(&pub); err != nil {
+		t.Fatal(err)
 	}
-	if s.Settings.Get().Model != "gpt-4.1" {
-		t.Fatalf("model=%s", s.Settings.Get().Model)
+	if pub.ActiveID != "openai" || pub.Model != "gpt-4.1" {
+		t.Fatalf("selected=%+v", pub)
+	}
+	if s.Settings.Get().APIKey != "sk-secret" {
+		t.Fatalf("active key=%q", s.Settings.Get().APIKey)
+	}
+}
+
+func TestChatUsesProfileID(t *testing.T) {
+	var used config.LLM
+	s := testServer(t, fakeProvider{deltas: []llm.Delta{
+		{Content: "ok", FinishReason: "stop"},
+	}})
+	s.Settings = config.NewStore(filepath.Join(t.TempDir(), "settings.json"), []config.LLM{
+		{ID: "a", BaseURL: config.DefaultBaseURL, APIKey: "one", Model: "grok-4.6"},
+		{ID: "b", BaseURL: "https://api.openai.com/v1", APIKey: "two", Model: "gpt-4.1"},
+	})
+	s.NewLLM = func(l config.LLM) llm.ChatProvider {
+		used = l
+		return fakeProvider{deltas: []llm.Delta{{Content: "ok", FinishReason: "stop"}}}
+	}
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	project, err := s.Projects.Create("Models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"project_id":"` + project.ID + `","profile_id":"b","message":"hi"}`
+	resp, err := http.Post(ts.URL+"/v1/agent/chat", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("%s %s", resp.Status, raw)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	if used.Model != "gpt-4.1" || used.APIKey != "two" {
+		t.Fatalf("used=%+v", used)
 	}
 }
 

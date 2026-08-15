@@ -31,7 +31,23 @@ FFmpeg is never executed as a shell string. Commands arrive as structured tool a
 
 ## Configure the LLM
 
-Three fields. That is the whole provider contract.
+Models are declared in `.env`. The editor can only select among those entries.
+
+```bash
+LLM_MODELS=grok,openai
+
+LLM_GROK_LABEL=Grok
+LLM_GROK_BASE_URL=https://api.x.ai/v1
+LLM_GROK_MODEL=grok-4.6
+LLM_GROK_API_KEY=xai-…
+
+LLM_OPENAI_LABEL=OpenAI
+LLM_OPENAI_BASE_URL=https://api.openai.com/v1
+LLM_OPENAI_MODEL=gpt-4.1
+LLM_OPENAI_API_KEY=sk-…
+```
+
+If `LLM_MODELS` is unset, the original single-model vars still work:
 
 | Field      | Env            | Default                 |
 |------------|----------------|-------------------------|
@@ -39,15 +55,9 @@ Three fields. That is the whole provider contract.
 | `api_key`  | `LLM_API_KEY` (or `XAI_API_KEY`) | _(empty)_ |
 | `model`    | `LLM_MODEL`    | `grok-4.6`              |
 
-Copy `.env.example` to `.env` or set the variables. Settings can also be changed at runtime:
-
-```bash
-curl -X PUT localhost:8080/v1/settings \
-  -H 'content-type: application/json' \
-  -d '{"base_url":"https://api.x.ai/v1","api_key":"xai-…","model":"grok-4.6"}'
-```
-
-GET `/v1/settings` returns a **masked** key. Sending the masked value back on PUT keeps the existing secret.
+`GET /v1/settings` lists the env-defined models (keys are never returned).
+`PUT /v1/settings` with `{"active_id":"openai"}` switches the active one.
+`POST /v1/agent/chat` accepts optional `profile_id` for that turn.
 
 Examples of other providers (same three fields):
 

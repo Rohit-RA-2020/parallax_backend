@@ -6,56 +6,6 @@ import (
 	"testing"
 )
 
-func TestMaskKey(t *testing.T) {
-	if maskKey("") != "" {
-		t.Fatal("empty key should mask to empty")
-	}
-	got := maskKey("xai-abcdefghij")
-	if got == "xai-abcdefghij" {
-		t.Fatal("key was not masked")
-	}
-	if !LooksMasked(got) {
-		t.Fatalf("masked key %q not detected", got)
-	}
-	if LooksMasked("sk-live-real-secret") {
-		t.Fatal("real key should not look masked")
-	}
-}
-
-func TestStoreUpdateKeepsMaskedKey(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "settings.json")
-	s := NewStore(path, LLM{
-		BaseURL: DefaultBaseURL,
-		APIKey:  "secret-key-value",
-		Model:   DefaultModel,
-	})
-	updated, err := s.Update(LLM{
-		BaseURL: "https://api.openai.com/v1",
-		APIKey:  "secr********alue",
-		Model:   "gpt-4.1",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if updated.APIKey != "secret-key-value" {
-		t.Fatalf("api key overwritten: %q", updated.APIKey)
-	}
-	if updated.BaseURL != "https://api.openai.com/v1" {
-		t.Fatalf("base url: %s", updated.BaseURL)
-	}
-	if updated.Model != "gpt-4.1" {
-		t.Fatalf("model: %s", updated.Model)
-	}
-
-	// Reload from disk.
-	s2 := NewStore(path, LLM{BaseURL: "https://x", APIKey: "y", Model: "z"})
-	got := s2.Get()
-	if got.APIKey != "secret-key-value" || got.Model != "gpt-4.1" {
-		t.Fatalf("persisted settings not reloaded: %+v", got)
-	}
-}
-
 func TestValidateLLM(t *testing.T) {
 	if err := ValidateLLM(LLM{}); err == nil {
 		t.Fatal("expected error")
@@ -65,6 +15,108 @@ func TestValidateLLM(t *testing.T) {
 	}
 	if err := ValidateLLM(LLM{BaseURL: DefaultBaseURL, APIKey: "k", Model: DefaultModel}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStoreSelectsEnvProfiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	s := NewStore(path, []LLM{
+		{ID: "grok", Label: "Grok", BaseURL: DefaultBaseURL, APIKey: "xai-secret", Model: DefaultModel},
+		{ID: "gpt", Label: "GPT", BaseURL: "https://api.openai.com/v1", APIKey: "sk-secret", Model: "gpt-4.1"},
+	})
+	if s.Get().ID != "grok" {
+		t.Fatalf("default active=%+v", s.Get())
+	}
+	selected, err := s.Select("gpt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.Model != "gpt-4.1" || s.Get().APIKey != "sk-secret" {
+		t.Fatalf("selected=%+v", selected)
+	}
+
+	s2 := NewStore(path, []LLM{
+		{ID: "grok", BaseURL: DefaultBaseURL, APIKey: "xai-secret", Model: DefaultModel},
+		{ID: "gpt", BaseURL: "https://api.openai.com/v1", APIKey: "sk-secret", Model: "gpt-4.1"},
+	})
+	if s2.Get().ID != "gpt" {
+		t.Fatalf("persisted active=%+v", s2.Get())
+	}
+	if len(s2.Snapshot().Profiles) != 2 {
+		t.Fatalf("profiles came from settings file: %+v", s2.Snapshot())
+	}
+}
+
+func TestStoreIgnoresUnknownPersistedActive(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte(`{"active_id":"missing"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewStore(path, []LLM{
+		{ID: "grok", BaseURL: DefaultBaseURL, APIKey: "k", Model: DefaultModel},
+	})
+	if s.Get().ID != "grok" {
+		t.Fatalf("active=%+v", s.Get())
+	}
+}
+
+func TestGetByID(t *testing.T) {
+	s := NewStore(filepath.Join(t.TempDir(), "settings.json"), []LLM{
+		{ID: "a", BaseURL: DefaultBaseURL, APIKey: "one", Model: "grok-4.6"},
+		{ID: "b", BaseURL: "https://api.openai.com/v1", APIKey: "two", Model: "gpt-4.1"},
+	})
+	got, err := s.GetByID("b")
+	if err != nil || got.Model != "gpt-4.1" {
+		t.Fatalf("get by id: %+v %v", got, err)
+	}
+	if _, err := s.GetByID("missing"); err == nil {
+		t.Fatal("expected unknown id error")
+	}
+}
+
+func TestLoadLLMProfilesFromModelsList(t *testing.T) {
+	t.Setenv("LLM_PROFILES", "")
+	t.Setenv("LLM_MODELS", "grok, gpt")
+	t.Setenv("LLM_GROK_LABEL", "Grok")
+	t.Setenv("LLM_GROK_BASE_URL", DefaultBaseURL)
+	t.Setenv("LLM_GROK_MODEL", DefaultModel)
+	t.Setenv("LLM_GROK_API_KEY", "xai-secret")
+	t.Setenv("LLM_GPT_BASE_URL", "https://api.openai.com/v1")
+	t.Setenv("LLM_GPT_MODEL", "gpt-4.1")
+	t.Setenv("LLM_GPT_API_KEY", "sk-secret")
+
+	got := loadLLMProfiles()
+	if len(got) != 2 {
+		t.Fatalf("profiles=%+v", got)
+	}
+	if got[0].ID != "grok" || got[0].Label != "Grok" || got[0].APIKey != "xai-secret" {
+		t.Fatalf("first=%+v", got[0])
+	}
+	if got[1].ID != "gpt" || got[1].Model != "gpt-4.1" {
+		t.Fatalf("second=%+v", got[1])
+	}
+}
+
+func TestLoadLLMProfilesFromJSON(t *testing.T) {
+	t.Setenv("LLM_MODELS", "")
+	t.Setenv("LLM_PROFILES", `[{"id":"gemini","label":"Gemini","base_url":"https://generativelanguage.googleapis.com/v1beta/openai","model":"gemini-3.7-flash","api_key":"g-secret"}]`)
+	got := loadLLMProfiles()
+	if len(got) != 1 || got[0].ID != "gemini" || got[0].APIKey != "g-secret" {
+		t.Fatalf("profiles=%+v", got)
+	}
+}
+
+func TestLoadLLMProfilesFallback(t *testing.T) {
+	t.Setenv("LLM_MODELS", "")
+	t.Setenv("LLM_PROFILES", "")
+	t.Setenv("LLM_BASE_URL", "https://api.openai.com/v1")
+	t.Setenv("LLM_MODEL", "gpt-4.1")
+	t.Setenv("LLM_API_KEY", "sk-fallback")
+	got := loadLLMProfiles()
+	if len(got) != 1 || got[0].Model != "gpt-4.1" || got[0].APIKey != "sk-fallback" {
+		t.Fatalf("fallback=%+v", got)
 	}
 }
 
