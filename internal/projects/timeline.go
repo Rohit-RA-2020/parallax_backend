@@ -65,6 +65,7 @@ type TimelineClip struct {
 	MediaType            string `json:"media_type,omitempty"`
 	Color                string `json:"color,omitempty"`
 	WaveSeed             int    `json:"wave_seed,omitempty"`
+	LinkID               string `json:"link_id,omitempty"`
 }
 
 func emptyTimeline() Timeline {
@@ -260,6 +261,11 @@ func normalizeClip(clip TimelineClip) (TimelineClip, error) {
 	}
 	if clip.WaveSeed < 0 {
 		clip.WaveSeed = 0
+	}
+	if clip.LinkID != "" {
+		if err := validateClipID(clip.LinkID); err != nil {
+			return TimelineClip{}, fmt.Errorf("%w: clip %q has an invalid link id", ErrInvalidTimeline, clip.ID)
+		}
 	}
 	return clip, nil
 }

@@ -57,6 +57,7 @@ func TestTimelinePersistsAcrossReload(t *testing.T) {
 				MediaPath:            "media/highway.mp4",
 				MediaType:            "video",
 				Color:                "#8a6a48",
+				LinkID:               "link-pair",
 			},
 		},
 	})
@@ -84,7 +85,7 @@ func TestTimelinePersistsAcrossReload(t *testing.T) {
 	if got.Revision != 1 || got.PlayheadFrame != 77 || got.SelectedID != "clip-a" || got.PxPerSecond != 32 {
 		t.Fatalf("got=%+v", got)
 	}
-	if got.Clips[0].SourceInFrame != 8 || got.Clips[0].DurationFrames != 96 || got.Clips[0].MediaPath != "media/highway.mp4" {
+	if got.Clips[0].SourceInFrame != 8 || got.Clips[0].DurationFrames != 96 || got.Clips[0].MediaPath != "media/highway.mp4" || got.Clips[0].LinkID != "link-pair" {
 		t.Fatalf("video clip=%+v", got.Clips[0])
 	}
 	if got.Clips[1].WaveSeed != 9 || got.Clips[1].SourceInFrame != 12 {
@@ -120,6 +121,7 @@ func TestTimelineRejectsInvalid(t *testing.T) {
 		{FPS: 24, Clips: []TimelineClip{{ID: "a", Track: "V1", Kind: "video", DurationFrames: 0}}},
 		{FPS: 24, Clips: []TimelineClip{{ID: "a", Track: "V1", Kind: "video", StartFrame: -1, DurationFrames: 1}}},
 		{FPS: 24, Clips: []TimelineClip{{ID: "a", Track: "V1", Kind: "video", DurationFrames: 10, MediaPath: "../secret.mp4"}}},
+		{FPS: 24, Clips: []TimelineClip{{ID: "a", Track: "V1", Kind: "video", DurationFrames: 1, LinkID: "../x"}}},
 		{Schema: 9, FPS: 24},
 		{
 			FPS: 24,
