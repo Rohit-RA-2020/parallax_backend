@@ -304,14 +304,20 @@ func (s *Server) attachDurations(projectID string, media []projects.Media) {
 	defer cancel()
 	for i := range media {
 		kind := media[i].Kind
-		if kind != "video" && kind != "audio" {
+		if kind != "video" && kind != "audio" && kind != "image" {
 			continue
 		}
-		d, err := ffmpeg.ProbeDuration(ctx, s.Bins, project.Dir, media[i].Path)
-		if err != nil || d <= 0 {
+		info, err := ffmpeg.ProbeMedia(ctx, s.Bins, project.Dir, media[i].Path)
+		if err != nil {
 			continue
 		}
-		media[i].Duration = d
+		if info.Duration > 0 {
+			media[i].Duration = info.Duration
+		}
+		if info.Width > 0 && info.Height > 0 {
+			media[i].Width = info.Width
+			media[i].Height = info.Height
+		}
 	}
 }
 

@@ -34,6 +34,8 @@ type Media struct {
 	ContentType string    `json:"content_type"`
 	Bytes       int64     `json:"bytes"`
 	Duration    float64   `json:"duration,omitempty"`
+	Width       int       `json:"width,omitempty"`
+	Height      int       `json:"height,omitempty"`
 	ModifiedAt  time.Time `json:"modified_at"`
 }
 
