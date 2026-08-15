@@ -3,7 +3,11 @@
 // Ollama, …) can be used by changing base URL, API key, and model.
 package llm
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
 
 type Role string
 
@@ -67,6 +71,33 @@ type Usage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
+// ThinkingEffort controls how much reasoning a compatible model should use.
+// Keep this deliberately small because it is exposed directly in the UI.
+type ThinkingEffort string
+
+const (
+	ThinkingEffortLow    ThinkingEffort = "low"
+	ThinkingEffortMedium ThinkingEffort = "medium"
+	ThinkingEffortHigh   ThinkingEffort = "high"
+)
+
+const DefaultThinkingEffort = ThinkingEffortMedium
+
+func NormalizeThinkingEffort(value string) (ThinkingEffort, error) {
+	switch ThinkingEffort(strings.ToLower(strings.TrimSpace(value))) {
+	case "":
+		return DefaultThinkingEffort, nil
+	case ThinkingEffortLow:
+		return ThinkingEffortLow, nil
+	case ThinkingEffortMedium:
+		return ThinkingEffortMedium, nil
+	case ThinkingEffortHigh:
+		return ThinkingEffortHigh, nil
+	default:
+		return "", fmt.Errorf("thinking_effort must be low, medium, or high")
+	}
+}
+
 // Delta is one incremental piece of a streamed completion.
 type Delta struct {
 	Content      string
@@ -92,10 +123,11 @@ type ToolCallDelta struct {
 
 // Request is the provider-neutral chat request.
 type Request struct {
-	Messages    []Message
-	Tools       []ToolSpec
-	ToolChoice  any
-	Temperature *float64
+	Messages        []Message
+	Tools           []ToolSpec
+	ToolChoice      any
+	Temperature     *float64
+	ReasoningEffort ThinkingEffort
 }
 
 func Ptr[T any](v T) *T { return &v }

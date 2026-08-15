@@ -23,15 +23,47 @@ import (
 
 type fakeProvider struct {
 	deltas []llm.Delta
+	seen   *llm.Request
 }
 
-func (f fakeProvider) Stream(_ context.Context, _ llm.Request) (<-chan llm.Delta, error) {
+func (f fakeProvider) Stream(_ context.Context, req llm.Request) (<-chan llm.Delta, error) {
+	if f.seen != nil {
+		*f.seen = req
+	}
 	ch := make(chan llm.Delta, len(f.deltas))
 	for _, d := range f.deltas {
 		ch <- d
 	}
 	close(ch)
 	return ch, nil
+}
+
+func TestChatPassesThinkingEffort(t *testing.T) {
+	var seen llm.Request
+	s := testServer(t, fakeProvider{
+		deltas: []llm.Delta{{Content: "ok", FinishReason: "stop"}},
+		seen:   &seen,
+	})
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	project, err := s.Projects.Create("Thinking")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"project_id":"` + project.ID + `","message":"hi","thinking_effort":"low"}`
+	resp, err := http.Post(ts.URL+"/v1/agent/chat", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%s", resp.Status)
+	}
+	if seen.ReasoningEffort != llm.ThinkingEffortLow {
+		t.Fatalf("reasoning effort=%q", seen.ReasoningEffort)
+	}
 }
 
 func testServer(t *testing.T, p llm.ChatProvider) *Server {

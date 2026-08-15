@@ -43,12 +43,13 @@ func NewCompatClient(baseURL, apiKey, model string) *CompatClient {
 }
 
 type wireRequest struct {
-	Model       string     `json:"model"`
-	Messages    []Message  `json:"messages"`
-	Tools       []ToolSpec `json:"tools,omitempty"`
-	ToolChoice  any        `json:"tool_choice,omitempty"`
-	Stream      bool       `json:"stream"`
-	Temperature *float64   `json:"temperature,omitempty"`
+	Model           string         `json:"model"`
+	Messages        []Message      `json:"messages"`
+	Tools           []ToolSpec     `json:"tools,omitempty"`
+	ToolChoice      any            `json:"tool_choice,omitempty"`
+	Stream          bool           `json:"stream"`
+	Temperature     *float64       `json:"temperature,omitempty"`
+	ReasoningEffort ThinkingEffort `json:"reasoning_effort,omitempty"`
 }
 
 type wireError struct {
@@ -91,12 +92,13 @@ func (c *CompatClient) Stream(ctx context.Context, req Request) (<-chan Delta, e
 	}
 
 	body, err := json.Marshal(wireRequest{
-		Model:       c.Model,
-		Messages:    sanitizeMessages(req.Messages),
-		Tools:       req.Tools,
-		ToolChoice:  req.ToolChoice,
-		Stream:      true,
-		Temperature: req.Temperature,
+		Model:           c.Model,
+		Messages:        sanitizeMessages(req.Messages),
+		Tools:           req.Tools,
+		ToolChoice:      req.ToolChoice,
+		Stream:          true,
+		Temperature:     req.Temperature,
+		ReasoningEffort: req.ReasoningEffort,
 	})
 	if err != nil {
 		return nil, err

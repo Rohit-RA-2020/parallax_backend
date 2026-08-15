@@ -181,6 +181,14 @@ func TestCompatClientStream(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer test-key" {
 			t.Errorf("auth %s", r.Header.Get("Authorization"))
 		}
+		var body struct {
+			ReasoningEffort string `json:"reasoning_effort"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		} else if body.ReasoningEffort != "high" {
+			t.Errorf("reasoning_effort=%q", body.ReasoningEffort)
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n"))
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"lo\"},\"finish_reason\":\"stop\"}]}\n\n"))
@@ -191,7 +199,8 @@ func TestCompatClientStream(t *testing.T) {
 	c := NewCompatClient(srv.URL+"/v1", "test-key", "grok-4.6")
 	c.HTTPClient = srv.Client()
 	ch, err := c.Stream(context.Background(), Request{
-		Messages: []Message{{Role: RoleUser, Content: "hi"}},
+		Messages:        []Message{{Role: RoleUser, Content: "hi"}},
+		ReasoningEffort: ThinkingEffortHigh,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -108,11 +108,12 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 type chatRequest struct {
-	SessionID string        `json:"session_id"`
-	ProjectID string        `json:"project_id"`
-	ProfileID string        `json:"profile_id"`
-	Message   string        `json:"message"`
-	Messages  []llm.Message `json:"messages"`
+	SessionID      string        `json:"session_id"`
+	ProjectID      string        `json:"project_id"`
+	ProfileID      string        `json:"profile_id"`
+	Message        string        `json:"message"`
+	Messages       []llm.Message `json:"messages"`
+	ThinkingEffort string        `json:"thinking_effort"`
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +136,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := config.ValidateLLM(llmCfg); err != nil {
 		writeError(w, http.StatusFailedDependency, "LLM is not configured: "+err.Error())
+		return
+	}
+	thinkingEffort, err := llm.NormalizeThinkingEffort(req.ThinkingEffort)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -240,8 +246,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		Logger:   s.log(),
 	}
 	out := ag.Run(r.Context(), agent.Input{
-		SessionID: sess.ID,
-		Messages:  msgs,
+		SessionID:      sess.ID,
+		Messages:       msgs,
+		ThinkingEffort: thinkingEffort,
 	}, func(ev agent.Event) {
 		_ = stream.Event(ev)
 	})

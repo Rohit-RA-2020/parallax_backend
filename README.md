@@ -58,6 +58,8 @@ If `LLM_MODELS` is unset, the original single-model vars still work:
 `GET /v1/settings` lists the env-defined models (keys are never returned).
 `PUT /v1/settings` with `{"active_id":"openai"}` switches the active one.
 `POST /v1/agent/chat` accepts optional `profile_id` for that turn.
+It also accepts optional `thinking_effort` (`low`, `medium`, or `high`;
+defaults to `medium`) and forwards it as the provider's `reasoning_effort`.
 
 Examples of other providers (same three fields):
 

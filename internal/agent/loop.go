@@ -24,8 +24,9 @@ type Agent struct {
 }
 
 type Input struct {
-	SessionID string
-	Messages  []llm.Message
+	SessionID      string
+	Messages       []llm.Message
+	ThinkingEffort llm.ThinkingEffort
 }
 
 type Outcome struct {
@@ -78,10 +79,11 @@ func (a *Agent) Run(ctx context.Context, in Input, emit Sink) Outcome {
 		a.log().Info("agent step", "session", in.SessionID, "iteration", i)
 
 		deltas, err := a.Provider.Stream(ctx, llm.Request{
-			Messages:    Trim(messages, 80),
-			Tools:       specs,
-			ToolChoice:  "auto",
-			Temperature: temp,
+			Messages:        Trim(messages, 80),
+			Tools:           specs,
+			ToolChoice:      "auto",
+			Temperature:     temp,
+			ReasoningEffort: in.ThinkingEffort,
 		})
 		if err != nil {
 			emit(NewEvent(EventError, ErrorPayload{Message: err.Error()}))
