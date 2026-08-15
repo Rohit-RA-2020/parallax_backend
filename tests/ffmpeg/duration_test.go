@@ -1,9 +1,13 @@
-package ffmpeg
+package ffmpeg_test
 
-import "testing"
+import (
+	"testing"
+
+	. "parallax/internal/ffmpeg"
+)
 
 func TestParseMediaProbeVideo(t *testing.T) {
-	got, err := parseMediaProbe(`{
+	got, err := ParseMediaProbe(`{
 		"streams":[{"width":1080,"height":1920,"codec_type":"video"}],
 		"format":{"duration":"30.533000"}
 	}`)
@@ -19,7 +23,7 @@ func TestParseMediaProbeVideo(t *testing.T) {
 }
 
 func TestParseMediaProbeSkipsAudioStream(t *testing.T) {
-	got, err := parseMediaProbe(`{
+	got, err := ParseMediaProbe(`{
 		"streams":[
 			{"codec_type":"audio"},
 			{"width":1920,"height":1080,"codec_type":"video"}

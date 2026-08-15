@@ -1,9 +1,11 @@
-package projects
+package projects_test
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	. "parallax/internal/projects"
 )
 
 func TestTimelinePersistsAcrossReload(t *testing.T) {

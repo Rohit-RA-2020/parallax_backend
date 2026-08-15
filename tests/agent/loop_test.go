@@ -1,4 +1,4 @@
-package agent
+package agent_test
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	. "parallax/internal/agent"
 	"parallax/internal/llm"
 	"parallax/internal/tools"
 )

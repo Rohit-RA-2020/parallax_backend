@@ -53,8 +53,8 @@ type Config struct {
 
 // Load reads optional .env files, then environment variables.
 func Load() (Config, error) {
-	loadDotEnv(".env")
-	loadDotEnv(filepath.Join("..", ".env"))
+	LoadDotEnv(".env")
+	LoadDotEnv(filepath.Join("..", ".env"))
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -81,7 +81,7 @@ func Load() (Config, error) {
 		MaxIters:     envInt("PARALLAX_MAX_ITERS", DefaultMaxIters),
 		FFmpegBin:    envOr("FFMPEG_BIN", "ffmpeg"),
 		FFprobeBin:   envOr("FFPROBE_BIN", "ffprobe"),
-		LLMs:         loadLLMProfiles(),
+		LLMs:         LoadLLMProfiles(),
 	}
 
 	if cfg.MaxIters < 1 {
@@ -282,7 +282,9 @@ func writeActiveID(path, id string) error {
 	return os.WriteFile(path, b, 0o600)
 }
 
-func loadLLMProfiles() []LLM {
+// LoadLLMProfiles reads model triples from LLM_MODELS / LLM_PROFILES / the
+// single-model fallback vars.
+func LoadLLMProfiles() []LLM {
 	if raw := strings.TrimSpace(os.Getenv("LLM_PROFILES")); raw != "" {
 		var items []LLM
 		if err := json.Unmarshal([]byte(raw), &items); err == nil && len(items) > 0 {
@@ -411,8 +413,8 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// loadDotEnv is a tiny KEY=VALUE reader. Missing files are ignored.
-func loadDotEnv(path string) {
+// LoadDotEnv is a tiny KEY=VALUE reader. Missing files are ignored.
+func LoadDotEnv(path string) {
 	f, err := os.Open(path)
 	if err != nil {
 		return

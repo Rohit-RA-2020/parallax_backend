@@ -1,8 +1,10 @@
-package ffmpeg
+package ffmpeg_test
 
 import (
 	"strings"
 	"testing"
+
+	. "parallax/internal/ffmpeg"
 )
 
 func TestBuildExportArgsMP4(t *testing.T) {

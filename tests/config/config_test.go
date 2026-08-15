@@ -1,9 +1,11 @@
-package config
+package config_test
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	. "parallax/internal/config"
 )
 
 func TestValidateLLM(t *testing.T) {
@@ -87,7 +89,7 @@ func TestLoadLLMProfilesFromModelsList(t *testing.T) {
 	t.Setenv("LLM_GPT_MODEL", "gpt-4.1")
 	t.Setenv("LLM_GPT_API_KEY", "sk-secret")
 
-	got := loadLLMProfiles()
+	got := LoadLLMProfiles()
 	if len(got) != 2 {
 		t.Fatalf("profiles=%+v", got)
 	}
@@ -102,7 +104,7 @@ func TestLoadLLMProfilesFromModelsList(t *testing.T) {
 func TestLoadLLMProfilesFromJSON(t *testing.T) {
 	t.Setenv("LLM_MODELS", "")
 	t.Setenv("LLM_PROFILES", `[{"id":"gemini","label":"Gemini","base_url":"https://generativelanguage.googleapis.com/v1beta/openai","model":"gemini-3.7-flash","api_key":"g-secret"}]`)
-	got := loadLLMProfiles()
+	got := LoadLLMProfiles()
 	if len(got) != 1 || got[0].ID != "gemini" || got[0].APIKey != "g-secret" {
 		t.Fatalf("profiles=%+v", got)
 	}
@@ -114,7 +116,7 @@ func TestLoadLLMProfilesFallback(t *testing.T) {
 	t.Setenv("LLM_BASE_URL", "https://api.openai.com/v1")
 	t.Setenv("LLM_MODEL", "gpt-4.1")
 	t.Setenv("LLM_API_KEY", "sk-fallback")
-	got := loadLLMProfiles()
+	got := LoadLLMProfiles()
 	if len(got) != 1 || got[0].Model != "gpt-4.1" || got[0].APIKey != "sk-fallback" {
 		t.Fatalf("fallback=%+v", got)
 	}
@@ -127,7 +129,7 @@ func TestLoadDotEnvDoesNotOverride(t *testing.T) {
 	if err := os.WriteFile(path, []byte("LLM_MODEL=from-file\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	loadDotEnv(path)
+	LoadDotEnv(path)
 	if os.Getenv("LLM_MODEL") != "already-set" {
 		t.Fatalf("env was overridden: %s", os.Getenv("LLM_MODEL"))
 	}

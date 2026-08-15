@@ -1,4 +1,4 @@
-package projects
+package projects_test
 
 import (
 	"os"
@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"parallax/internal/llm"
+	. "parallax/internal/projects"
 )
 
 func TestProjectUploadAndReload(t *testing.T) {

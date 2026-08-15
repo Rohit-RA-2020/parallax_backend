@@ -1,4 +1,4 @@
-package llm
+package llm_test
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	. "parallax/internal/llm"
 )
 
 func TestCompletionsURL(t *testing.T) {

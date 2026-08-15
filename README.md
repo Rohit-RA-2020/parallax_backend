@@ -146,6 +146,9 @@ project fps, source in-points, and media paths (not playback URLs).
 
 ## Tests
 
+All tests live under `tests/`, one package per internal area.
+
 ```bash
 go test ./...
+go test ./tests/...
 ```

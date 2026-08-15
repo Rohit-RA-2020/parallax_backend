@@ -1,4 +1,4 @@
-package httpapi
+package httpapi_test
 
 import (
 	"bytes"
@@ -15,6 +15,7 @@ import (
 
 	"parallax/internal/agent"
 	"parallax/internal/config"
+	. "parallax/internal/httpapi"
 	"parallax/internal/llm"
 	"parallax/internal/projects"
 	"parallax/internal/tools"

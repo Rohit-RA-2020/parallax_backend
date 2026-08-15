@@ -1,4 +1,4 @@
-package ffmpeg
+package ffmpeg_test
 
 import (
 	"context"
@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	. "parallax/internal/ffmpeg"
 )
 
 func TestTokenizeRejectsShell(t *testing.T) {

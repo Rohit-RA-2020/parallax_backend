@@ -40,10 +40,11 @@ func ProbeMedia(ctx context.Context, bins Bins, workspace, rel string) (MediaPro
 	if err != nil {
 		return MediaProbe{}, err
 	}
-	return parseMediaProbe(res.Stdout)
+	return ParseMediaProbe(res.Stdout)
 }
 
-func parseMediaProbe(raw string) (MediaProbe, error) {
+// ParseMediaProbe reads duration and the first video/image frame size from ffprobe JSON.
+func ParseMediaProbe(raw string) (MediaProbe, error) {
 	var payload struct {
 		Streams []struct {
 			Width     int    `json:"width"`
