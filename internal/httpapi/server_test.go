@@ -373,6 +373,120 @@ func TestProjectChatsPersist(t *testing.T) {
 	}
 }
 
+func TestProjectTimelineRoundTrip(t *testing.T) {
+	s := testServer(t, fakeProvider{})
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	project, err := s.Projects.Create("Sequence")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Get(ts.URL + "/v1/projects/" + project.ID + "/timeline")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatal(resp.Status)
+	}
+	var empty struct {
+		Revision int `json:"revision"`
+		FPS      int `json:"fps"`
+		Clips    []struct {
+			ID string `json:"id"`
+		} `json:"clips"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&empty); err != nil {
+		t.Fatal(err)
+	}
+	if empty.Revision != 0 || empty.FPS != 24 || len(empty.Clips) != 0 {
+		t.Fatalf("empty=%+v", empty)
+	}
+
+	body := `{
+		"schema":1,
+		"fps":24,
+		"playhead_frame":48,
+		"selected_id":"clip-1",
+		"px_per_second":28,
+		"clips":[{
+			"id":"clip-1",
+			"name":"Highway",
+			"track":"V1",
+			"kind":"video",
+			"start_frame":12,
+			"duration_frames":72,
+			"source_in_frame":8,
+			"source_duration_frames":240,
+			"media_path":"media/highway.mp4",
+			"media_type":"video",
+			"color":"#8a6a48"
+		}]
+	}`
+	req, err := http.NewRequest(http.MethodPut, ts.URL+"/v1/projects/"+project.ID+"/timeline", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("put %s %s", resp.Status, raw)
+	}
+	var saved struct {
+		Revision      int `json:"revision"`
+		PlayheadFrame int `json:"playhead_frame"`
+		Clips         []struct {
+			ID            string `json:"id"`
+			StartFrame    int    `json:"start_frame"`
+			SourceInFrame int    `json:"source_in_frame"`
+			MediaPath     string `json:"media_path"`
+		} `json:"clips"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Revision != 1 || saved.PlayheadFrame != 48 || len(saved.Clips) != 1 {
+		t.Fatalf("saved=%+v", saved)
+	}
+	if saved.Clips[0].SourceInFrame != 8 || saved.Clips[0].MediaPath != "media/highway.mp4" {
+		t.Fatalf("clip=%+v", saved.Clips[0])
+	}
+
+	resp, err = http.Get(ts.URL + "/v1/projects/" + project.ID + "/timeline")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(&saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Revision != 1 || saved.Clips[0].StartFrame != 12 {
+		t.Fatalf("reloaded=%+v", saved)
+	}
+
+	bad := `{"schema":1,"fps":24,"clips":[{"id":"x","track":"V1","kind":"video","duration_frames":10,"media_path":"../escape.mp4"}]}`
+	req, err = http.NewRequest(http.MethodPut, ts.URL+"/v1/projects/"+project.ID+"/timeline", strings.NewReader(bad))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+}
+
 func TestChatRejectsUnknownProject(t *testing.T) {
 	s := testServer(t, fakeProvider{})
 	ts := httptest.NewServer(s.Handler())

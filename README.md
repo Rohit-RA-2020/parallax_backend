@@ -91,6 +91,8 @@ scoped to that directory for the whole session.
 | `GET` | `/v1/projects/{id}/chats/{chatId}` | Load a chat and its messages |
 | `PATCH` | `/v1/projects/{id}/chats/{chatId}` | Rename a chat |
 | `DELETE` | `/v1/projects/{id}/chats/{chatId}` | Delete a chat |
+| `GET` | `/v1/projects/{id}/timeline` | Load the persisted sequence (clips, in-points, playhead) |
+| `PUT` | `/v1/projects/{id}/timeline` | Atomically save the sequence as a frame-accurate document |
 
 Include `project_id` and `session_id` (the chat id) in `/v1/agent/chat`
 requests. The agent only sees files inside that project's workspace. Edits of
@@ -119,7 +121,9 @@ Events:
 | `error`       | `{message}` |
 
 Pass `session_id` on the next request to continue the same conversation. Project
-chats are written under `.parallax/chats/` and survive server restarts.
+chats are written under `.parallax/chats/` and survive server restarts. The
+sequence is stored as `.parallax/timeline.json` with integer frame times at the
+project fps, source in-points, and media paths (not playback URLs).
 
 ## Tools
 

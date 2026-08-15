@@ -61,6 +61,8 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /v1/projects/{id}/chats/{chatId}", s.handleGetChat)
 		mux.HandleFunc("PATCH /v1/projects/{id}/chats/{chatId}", s.handlePatchChat)
 		mux.HandleFunc("DELETE /v1/projects/{id}/chats/{chatId}", s.handleDeleteChat)
+		mux.HandleFunc("GET /v1/projects/{id}/timeline", s.handleGetTimeline)
+		mux.HandleFunc("PUT /v1/projects/{id}/timeline", s.handlePutTimeline)
 	}
 	return withCORS(withLog(s.log(), mux))
 }

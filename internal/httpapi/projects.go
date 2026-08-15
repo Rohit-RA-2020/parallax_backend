@@ -234,6 +234,31 @@ func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) handleGetTimeline(w http.ResponseWriter, r *http.Request) {
+	doc, err := s.Projects.GetTimeline(r.PathValue("id"))
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, doc)
+}
+
+func (s *Server) handlePutTimeline(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var doc projects.Timeline
+	if err := json.NewDecoder(r.Body).Decode(&doc); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	saved, err := s.Projects.SaveTimeline(id, doc)
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	_ = s.Projects.Touch(id)
+	writeJSON(w, http.StatusOK, saved)
+}
+
 func chatResponse(chat projects.Chat, includeMessages bool) map[string]any {
 	out := map[string]any{
 		"id":         chat.ID,
@@ -293,6 +318,10 @@ func (s *Server) attachDurations(projectID string, media []projects.Media) {
 func writeProjectError(w http.ResponseWriter, err error) {
 	if errors.Is(err, projects.ErrNotFound) || errors.Is(err, projects.ErrChatNotFound) || errors.Is(err, os.ErrNotExist) {
 		writeError(w, http.StatusNotFound, "project or media not found")
+		return
+	}
+	if errors.Is(err, projects.ErrInvalidTimeline) {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeError(w, http.StatusBadRequest, err.Error())
