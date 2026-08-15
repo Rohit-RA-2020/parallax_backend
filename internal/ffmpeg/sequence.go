@@ -2,20 +2,55 @@ package ffmpeg
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
 
 // SequenceClip is one timeline item in seconds, using project-relative paths.
 type SequenceClip struct {
-	Track     string
-	Kind      string
-	Path      string
-	Name      string
-	MediaType string
-	Start     float64
-	Duration  float64
-	SourceIn  float64
+	Track        string
+	Kind         string
+	Path         string
+	Name         string
+	MediaType    string
+	Start        float64
+	Duration     float64
+	SourceIn     float64
+	CanvasWidth  int
+	CanvasHeight int
+	TitleText    string
+	FontSize     float64
+	Fill         string
+	X            float64
+	Y            float64
+	AnchorX      float64
+	AnchorY      float64
+	Opacity      float64
+	OpacityKeys  []SequenceKeyframe
+	PlaybackRate float64
+	VolumeDB     float64
+	Muted        bool
+	ScaleX       float64
+	ScaleY       float64
+	Rotation     float64
+	CropTop      float64
+	CropRight    float64
+	CropBottom   float64
+	CropLeft     float64
+	Exposure     float64
+	Contrast     float64
+	Saturation   float64
+	FadeIn       float64
+	FadeOut      float64
+	FadeColor    string
+	CrossfadeIn  bool
+}
+
+type SequenceKeyframe struct {
+	Frame  int
+	Value  float64
+	Easing string
 }
 
 // BuildSequenceArgs renders the timeline the same way Program plays it:
@@ -86,13 +121,17 @@ func BuildSequenceArgs(spec ExportSpec, clips []SequenceClip, dest string) ([]st
 	}
 
 	for i, clip := range pictures {
+		inputDuration := clip.Duration
+		if clip.PlaybackRate > 0 {
+			inputDuration *= clip.PlaybackRate
+		}
 		if clip.MediaType == "image" {
 			args = append(args, "-loop", "1", "-framerate", strconv.Itoa(fps), "-t", formatSeconds(clip.Duration), "-i", clip.Path)
 		} else {
 			if clip.SourceIn > 0 {
 				args = append(args, "-ss", formatSeconds(clip.SourceIn))
 			}
-			args = append(args, "-t", formatSeconds(clip.Duration), "-i", clip.Path)
+			args = append(args, "-t", formatSeconds(inputDuration), "-i", clip.Path)
 		}
 		inputOf[i] = next
 		next++
@@ -103,7 +142,11 @@ func BuildSequenceArgs(spec ExportSpec, clips []SequenceClip, dest string) ([]st
 			if clip.SourceIn > 0 {
 				args = append(args, "-ss", formatSeconds(clip.SourceIn))
 			}
-			args = append(args, "-t", formatSeconds(clip.Duration), "-i", clip.Path)
+			inputDuration := clip.Duration
+			if clip.PlaybackRate > 0 {
+				inputDuration *= clip.PlaybackRate
+			}
+			args = append(args, "-t", formatSeconds(inputDuration), "-i", clip.Path)
 			audioOf[i] = next
 			next++
 		}
@@ -116,19 +159,107 @@ func BuildSequenceArgs(spec ExportSpec, clips []SequenceClip, dest string) ([]st
 		for i, clip := range pictures {
 			in := inputOf[i]
 			label := fmt.Sprintf("v%d", i)
-			scaled := fmt.Sprintf("[%d:v]scale=%d:%d:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setpts=PTS-STARTPTS+%s/TB[%s]",
-				in, w, h, w, h, formatSeconds(clip.Start), label)
+			rate := clip.PlaybackRate
+			if rate <= 0 {
+				rate = 1
+			}
+			chain := []string{}
+			if clip.CropTop != 0 || clip.CropRight != 0 || clip.CropBottom != 0 || clip.CropLeft != 0 {
+				chain = append(chain, fmt.Sprintf("crop=iw*(1-%s-%s):ih*(1-%s-%s):iw*%s:ih*%s", formatSeconds(clip.CropLeft), formatSeconds(clip.CropRight), formatSeconds(clip.CropTop), formatSeconds(clip.CropBottom), formatSeconds(clip.CropLeft), formatSeconds(clip.CropTop)))
+			}
+			chain = append(chain, fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease:force_divisible_by=2", w, h), fmt.Sprintf("pad=%d:%d:(ow-iw)/2:(oh-ih)/2", w, h))
+			if clip.Exposure != 0 || clip.Contrast != 0 || clip.Saturation != 0 {
+				chain = append(chain, fmt.Sprintf("eq=brightness=%s:contrast=%s:saturation=%s", formatSeconds(clip.Exposure/5), formatSeconds(1+clip.Contrast), formatSeconds(1+clip.Saturation)))
+			}
+			sx, sy := clip.ScaleX, clip.ScaleY
+			if sx == 0 {
+				sx = 1
+			}
+			if sy == 0 {
+				sy = 1
+			}
+			if sx != 1 || sy != 1 {
+				chain = append(chain, fmt.Sprintf("scale=iw*%s:ih*%s", formatSeconds(sx), formatSeconds(sy)))
+			}
+			if clip.Rotation != 0 {
+				chain = append(chain, fmt.Sprintf("rotate=%s*PI/180:ow=rotw(iw):oh=roth(ih):c=none", formatSeconds(clip.Rotation)))
+			}
+			if clip.Opacity > 0 && clip.Opacity < 1 {
+				chain = append(chain, "format=rgba", "colorchannelmixer=aa="+formatSeconds(clip.Opacity))
+			}
+			if clip.CrossfadeIn && clip.FadeIn > 0 {
+				chain = append(chain, "format=rgba", fmt.Sprintf("fade=t=in:st=0:d=%s:alpha=1", formatSeconds(clip.FadeIn)))
+			} else if clip.FadeIn > 0 {
+				color := clip.FadeColor
+				if color == "" {
+					color = "black"
+				}
+				chain = append(chain, fmt.Sprintf("fade=t=in:st=0:d=%s:color=%s", formatSeconds(clip.FadeIn), color))
+			}
+			if clip.FadeOut > 0 {
+				color := clip.FadeColor
+				if color == "" {
+					color = "black"
+				}
+				start := max(0.0, clip.Duration-clip.FadeOut)
+				chain = append(chain, fmt.Sprintf("fade=t=out:st=%s:d=%s:color=%s", formatSeconds(start), formatSeconds(clip.FadeOut), color))
+			}
+			chain = append(chain, fmt.Sprintf("setpts=(PTS-STARTPTS)/%s+%s/TB", formatSeconds(rate), formatSeconds(clip.Start)))
+			scaled := fmt.Sprintf("[%d:v]%s[%s]", in, strings.Join(chain, ","), label)
 			filters = append(filters, scaled)
 			out := fmt.Sprintf("ov%d", i)
-			filters = append(filters, fmt.Sprintf("[%s][%s]overlay=0:0:eof_action=pass:enable='between(t,%s,%s)'[%s]",
-				cur, label, formatSeconds(clip.Start), formatSeconds(clip.Start+clip.Duration), out))
+			cw, ch := clip.CanvasWidth, clip.CanvasHeight
+			if cw <= 0 {
+				cw = 1920
+			}
+			if ch <= 0 {
+				ch = 1080
+			}
+			x, y := clip.X, clip.Y
+			if x == 0 {
+				x = float64(cw) / 2
+			}
+			if y == 0 {
+				y = float64(ch) / 2
+			}
+			xexpr := fmt.Sprintf("(W-w)/2+(%s/%d-.5)*W", formatSeconds(x), cw)
+			yexpr := fmt.Sprintf("(H-h)/2+(%s/%d-.5)*H", formatSeconds(y), ch)
+			filters = append(filters, fmt.Sprintf("[%s][%s]overlay=x='%s':y='%s':eof_action=pass:enable='between(t,%s,%s)'[%s]", cur, label, xexpr, yexpr, formatSeconds(clip.Start), formatSeconds(clip.Start+clip.Duration), out))
 			cur = out
 		}
 		for i, clip := range titles {
 			out := fmt.Sprintf("t%d", i)
-			text := escapeDrawText(clip.Name)
-			filters = append(filters, fmt.Sprintf("[%s]drawtext=text='%s':fontcolor=white:fontsize=h/16:x=(w-text_w)/2:y=h-h/8:enable='between(t,%s,%s)'[%s]",
-				cur, text, formatSeconds(clip.Start), formatSeconds(clip.Start+clip.Duration), out))
+			text := clip.TitleText
+			if text == "" {
+				text = clip.Name
+			}
+			text = escapeDrawText(text)
+			fill := strings.TrimPrefix(clip.Fill, "#")
+			if fill == "" {
+				fill = "ffffff"
+			}
+			fontSize := clip.FontSize
+			if fontSize <= 0 {
+				fontSize = 64
+			}
+			cw, ch := clip.CanvasWidth, clip.CanvasHeight
+			if cw <= 0 {
+				cw = 1920
+			}
+			if ch <= 0 {
+				ch = 1080
+			}
+			x, y := clip.X, clip.Y
+			if x == 0 {
+				x = float64(cw) / 2
+			}
+			if y == 0 {
+				y = 96
+			}
+			xexpr := fmt.Sprintf("%s*w/%d-%s*text_w", formatSeconds(x), cw, formatSeconds(clip.AnchorX))
+			yexpr := fmt.Sprintf("%s*h/%d-%s*text_h", formatSeconds(y), ch, formatSeconds(clip.AnchorY))
+			filters = append(filters, fmt.Sprintf("[%s]drawtext=text='%s':fontcolor=%s:fontsize=%s*h/%d:x=%s:y=%s:alpha='%s':enable='between(t,%s,%s)'[%s]",
+				cur, text, fill, formatSeconds(fontSize), ch, xexpr, yexpr, opacityExpression(clip, fps), formatSeconds(clip.Start), formatSeconds(clip.Start+clip.Duration), out))
 			cur = out
 		}
 		if !strings.Contains(cur, ":") {
@@ -146,8 +277,15 @@ func BuildSequenceArgs(spec ExportSpec, clips []SequenceClip, dest string) ([]st
 			in := audioOf[i]
 			label := fmt.Sprintf("a%d", i)
 			delay := int(clip.Start*1000 + 0.5)
-			filters = append(filters, fmt.Sprintf("[%d:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,adelay=%d:all=1[%s]",
-				in, delay, label))
+			parts := []string{"aresample=48000", "aformat=sample_fmts=fltp:channel_layouts=stereo"}
+			if clip.PlaybackRate > 0 && clip.PlaybackRate != 1 {
+				parts = append(parts, atempoFilters(clip.PlaybackRate)...)
+			}
+			if clip.VolumeDB != 0 {
+				parts = append(parts, "volume="+formatSeconds(clip.VolumeDB)+"dB")
+			}
+			parts = append(parts, fmt.Sprintf("adelay=%d:all=1", delay))
+			filters = append(filters, fmt.Sprintf("[%d:a]%s[%s]", in, strings.Join(parts, ","), label))
 			mix = append(mix, "["+label+"]")
 		}
 		if len(mix) == 1 {
@@ -207,6 +345,25 @@ func BuildSequenceArgs(spec ExportSpec, clips []SequenceClip, dest string) ([]st
 	return args, nil
 }
 
+func opacityExpression(clip SequenceClip, fps int) string {
+	base := clip.Opacity
+	if base <= 0 && len(clip.OpacityKeys) == 0 {
+		base = 1
+	}
+	if len(clip.OpacityKeys) < 2 {
+		return formatSeconds(base)
+	}
+	keys := append([]SequenceKeyframe(nil), clip.OpacityKeys...)
+	sort.Slice(keys, func(i, j int) bool { return keys[i].Frame < keys[j].Frame })
+	a, b := keys[0], keys[1]
+	start := clip.Start + float64(a.Frame)/float64(fps)
+	end := clip.Start + float64(b.Frame)/float64(fps)
+	if end <= start {
+		return formatSeconds(b.Value)
+	}
+	return fmt.Sprintf("if(lt(t,%s),%s,if(gte(t,%s),%s,%s+(t-%s)*(%s-%s)/(%s-%s)))", formatSeconds(start), formatSeconds(a.Value), formatSeconds(end), formatSeconds(b.Value), formatSeconds(a.Value), formatSeconds(start), formatSeconds(b.Value), formatSeconds(a.Value), formatSeconds(end), formatSeconds(start))
+}
+
 func sequenceEnd(clips []SequenceClip) float64 {
 	var end float64
 	for _, clip := range clips {
@@ -231,12 +388,25 @@ func pictureClips(clips []SequenceClip) []SequenceClip {
 func audioClips(clips []SequenceClip) []SequenceClip {
 	var out []SequenceClip
 	for _, clip := range clips {
-		if clip.Kind != "audio" || clip.Path == "" {
+		if clip.Kind != "audio" || clip.Path == "" || clip.Muted {
 			continue
 		}
 		out = append(out, clip)
 	}
 	return out
+}
+
+func atempoFilters(rate float64) []string {
+	var out []string
+	for rate > 2 {
+		out = append(out, "atempo=2")
+		rate /= 2
+	}
+	for rate < .5 {
+		out = append(out, "atempo=0.5")
+		rate *= 2
+	}
+	return append(out, "atempo="+formatSeconds(rate))
 }
 
 func titleClips(clips []SequenceClip) []SequenceClip {

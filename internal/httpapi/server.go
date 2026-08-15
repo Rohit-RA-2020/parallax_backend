@@ -63,6 +63,13 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("DELETE /v1/projects/{id}/chats/{chatId}", s.handleDeleteChat)
 		mux.HandleFunc("GET /v1/projects/{id}/timeline", s.handleGetTimeline)
 		mux.HandleFunc("PUT /v1/projects/{id}/timeline", s.handlePutTimeline)
+		mux.HandleFunc("GET /v1/projects/{id}/history", s.handleGetHistory)
+		mux.HandleFunc("POST /v1/projects/{id}/history/undo", s.handleUndoHistory)
+		mux.HandleFunc("POST /v1/projects/{id}/history/redo", s.handleRedoHistory)
+		mux.HandleFunc("POST /v1/projects/{id}/history/restore", s.handleRestoreHistory)
+		mux.HandleFunc("POST /v1/projects/{id}/checkpoints", s.handleCreateCheckpoint)
+		mux.HandleFunc("PATCH /v1/projects/{id}/checkpoints/{checkpoint}", s.handleRenameCheckpoint)
+		mux.HandleFunc("DELETE /v1/projects/{id}/checkpoints/{checkpoint}", s.handleDeleteCheckpoint)
 	}
 	return withCORS(withLog(s.log(), mux))
 }
@@ -133,6 +140,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	toolRegistry := s.Tools
 	projectID := strings.TrimSpace(req.ProjectID)
+	var timelineTx *projects.TimelineTransaction
 	if projectID != "" {
 		if s.Projects == nil {
 			writeError(w, http.StatusBadRequest, "projects are not configured")
@@ -144,7 +152,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		toolRegistry = tools.NewRegistry()
-		tools.RegisterMedia(toolRegistry, tools.MediaEnv{Workspace: project.Dir, Bins: s.Bins})
+		timelineTx, err = s.Projects.BeginTimelineTransaction(projectID, projects.CommitMeta{
+			Actor: "agent", Summary: userText, ChatID: strings.TrimSpace(req.SessionID),
+		})
+		if err != nil {
+			writeProjectError(w, err)
+			return
+		}
+		tools.RegisterMedia(toolRegistry, tools.MediaEnv{Workspace: project.Dir, Bins: s.Bins, OnMutation: timelineTx.MarkMediaMutation})
+		tools.RegisterTimeline(toolRegistry, tools.TimelineEnv{Transaction: timelineTx, Store: s.Projects, ProjectID: projectID})
 	}
 	if toolRegistry == nil {
 		writeError(w, http.StatusInternalServerError, "media tools are not configured")
@@ -167,6 +183,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		s.Sessions.Remember(sess)
 	} else {
 		sess = s.Sessions.GetOrCreateForProject(req.SessionID, "")
+	}
+	if timelineTx != nil {
+		timelineTx.SetChatID(sess.ID)
 	}
 	msgs := append([]llm.Message(nil), sess.Messages...)
 	if len(msgs) == 0 || msgs[0].Role != llm.RoleSystem {
@@ -226,6 +245,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}, func(ev agent.Event) {
 		_ = stream.Event(ev)
 	})
+	if timelineTx != nil {
+		if out.Reason == "error" || out.Reason == "canceled" || out.Reason == "max_iterations" {
+			timelineTx.Rollback()
+		} else if timeline, changed, commitErr := timelineTx.Commit(); commitErr != nil {
+			_ = stream.Event(agent.NewEvent(agent.EventError, agent.ErrorPayload{Message: "timeline commit failed: " + commitErr.Error()}))
+		} else if changed {
+			_ = stream.Event(agent.NewEvent(agent.EventProjectChanged, agent.ProjectChangedPayload{
+				ProjectID: projectID, Revision: timeline.Revision, TimelineChanged: true,
+			}))
+		}
+	}
 	s.Sessions.ReplaceMessages(sess.ID, out.Messages)
 	if projectID != "" {
 		if _, err := s.Projects.SaveChatMessages(projectID, sess.ID, out.Messages); err != nil {
@@ -258,8 +288,8 @@ func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Access-Control-Allow-Origin", "*")
-		h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		h.Set("Access-Control-Allow-Methods", "GET, PUT, POST, DELETE, OPTIONS")
+		h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Expected-Revision, X-Change-Summary")
+		h.Set("Access-Control-Allow-Methods", "GET, PUT, POST, PATCH, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

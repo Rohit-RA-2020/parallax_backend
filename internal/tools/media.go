@@ -17,9 +17,10 @@ import (
 
 // MediaEnv is the execution context shared by ffmpeg-backed tools.
 type MediaEnv struct {
-	Workspace string
-	Bins      ffmpeg.Bins
-	AllowNet  bool
+	Workspace  string
+	Bins       ffmpeg.Bins
+	AllowNet   bool
+	OnMutation func()
 }
 
 const defaultFFmpegTimeout = 5 * time.Minute
@@ -340,9 +341,15 @@ func (e MediaEnv) runFFmpeg(ctx context.Context, raw json.RawMessage) Result {
 		out["applied_to"] = applyTo
 		out["in_place"] = true
 		out["note"] = "Output replaced the existing clip. The project still has one current version of this file."
+		if e.OnMutation != nil {
+			e.OnMutation()
+		}
 	} else if io := ffmpeg.ParseMediaIO(args); len(io.Outputs) > 0 {
 		out["output"] = io.Outputs[0]
 		out["in_place"] = false
+		if e.OnMutation != nil {
+			e.OnMutation()
+		}
 	}
 	return Result{OK: true, Output: out}
 }

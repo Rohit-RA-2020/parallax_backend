@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -92,6 +93,11 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, err)
 		return
 	}
+	history, err := s.Projects.History(id)
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
 	reader, err := r.MultipartReader()
 	if err != nil {
@@ -122,6 +128,10 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(uploaded) == 0 {
 		writeError(w, http.StatusBadRequest, "no media files were uploaded")
+		return
+	}
+	if _, err := s.Projects.CommitMediaState(id, history.Head, projects.CommitMeta{Actor: "human", Summary: "Uploaded media"}); err != nil {
+		writeProjectError(w, err)
 		return
 	}
 	s.attachDurations(id, uploaded)
@@ -158,7 +168,41 @@ func (s *Server) handleProjectFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteProjectFile(w http.ResponseWriter, r *http.Request) {
-	if err := s.Projects.DeleteFile(r.PathValue("id"), r.PathValue("path")); err != nil {
+	id := r.PathValue("id")
+	history, err := s.Projects.History(id)
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	timeline, err := s.Projects.GetTimeline(id)
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	if err := s.Projects.DeleteFile(id, r.PathValue("path")); err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	removedPath := filepath.ToSlash(filepath.Clean(filepath.FromSlash(r.PathValue("path"))))
+	removedIDs := map[string]bool{}
+	clips := timeline.Clips[:0]
+	for _, clip := range timeline.Clips {
+		if clip.MediaPath == removedPath {
+			removedIDs[clip.ID] = true
+		} else {
+			clips = append(clips, clip)
+		}
+	}
+	timeline.Clips = clips
+	transitions := timeline.Transitions[:0]
+	for _, transition := range timeline.Transitions {
+		if !removedIDs[transition.FromID] && !removedIDs[transition.ToID] {
+			transitions = append(transitions, transition)
+		}
+	}
+	timeline.Transitions = transitions
+	if _, err := s.Projects.CommitTimelineAndMedia(id, timeline, history.Head, projects.CommitMeta{Actor: "human", Summary: "Deleted media"}); err != nil {
+		_, _ = s.Projects.RestoreRevision(id, history.Head, -1)
 		writeProjectError(w, err)
 		return
 	}
@@ -250,7 +294,26 @@ func (s *Server) handlePutTimeline(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	saved, err := s.Projects.SaveTimeline(id, doc)
+	expected := -1
+	rawExpected := strings.TrimSpace(r.Header.Get("X-Expected-Revision"))
+	if rawExpected == "" {
+		rawExpected = strings.TrimSpace(r.URL.Query().Get("expected_revision"))
+	}
+	if rawExpected != "" {
+		value, parseErr := strconv.Atoi(rawExpected)
+		if parseErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid expected revision")
+			return
+		}
+		expected = value
+	}
+	summary := r.Header.Get("X-Change-Summary")
+	if strings.TrimSpace(summary) == "" {
+		summary = r.URL.Query().Get("summary")
+	}
+	saved, err := s.Projects.SaveTimelineCommit(id, doc, expected, projects.CommitMeta{
+		Actor: "human", Summary: summary,
+	})
 	if err != nil {
 		writeProjectError(w, err)
 		return
@@ -328,6 +391,10 @@ func writeProjectError(w http.ResponseWriter, err error) {
 	}
 	if errors.Is(err, projects.ErrInvalidTimeline) {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if errors.Is(err, projects.ErrRevisionConflict) {
+		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
 	writeError(w, http.StatusBadRequest, err.Error())

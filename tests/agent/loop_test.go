@@ -3,6 +3,7 @@ package agent_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -141,5 +142,34 @@ func TestTrimKeepsSystem(t *testing.T) {
 	}
 	if len(got) > 6 {
 		t.Fatalf("len=%d", len(got))
+	}
+}
+
+func TestTrimStartsAtUserInsteadOfOrphanedToolSequence(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: "sys"},
+		{Role: llm.RoleUser, Content: "old request"},
+		{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{
+			ID: "old-call", Type: "function", Function: llm.FunctionCall{Name: "get_timeline", Arguments: `{}`},
+		}}},
+		{Role: llm.RoleTool, Name: "get_timeline", ToolCallID: "old-call", Content: `{}`},
+	}
+	for i := 0; i < 39; i++ {
+		msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: fmt.Sprintf("u-%d", i)})
+		msgs = append(msgs, llm.Message{Role: llm.RoleAssistant, Content: fmt.Sprintf("a-%d", i)})
+	}
+
+	got := Trim(msgs, 80)
+	if len(got) > 80 {
+		t.Fatalf("len=%d", len(got))
+	}
+	if got[0].Role != llm.RoleSystem {
+		t.Fatal("system dropped")
+	}
+	if len(got) < 2 || got[1].Role != llm.RoleUser {
+		t.Fatalf("history starts with %s after system", got[1].Role)
+	}
+	if got[1].Content != "u-0" {
+		t.Fatalf("unexpected first retained turn %q", got[1].Content)
 	}
 }

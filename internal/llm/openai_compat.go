@@ -92,7 +92,7 @@ func (c *CompatClient) Stream(ctx context.Context, req Request) (<-chan Delta, e
 
 	body, err := json.Marshal(wireRequest{
 		Model:       c.Model,
-		Messages:    req.Messages,
+		Messages:    sanitizeMessages(req.Messages),
 		Tools:       req.Tools,
 		ToolChoice:  req.ToolChoice,
 		Stream:      true,
@@ -136,6 +136,63 @@ func (c *CompatClient) Stream(ctx context.Context, req Request) (<-chan Delta, e
 		}
 	}()
 	return out, nil
+}
+
+// sanitizeMessages repairs a narrow compatibility issue seen in some streamed
+// OpenAI-compatible providers: a complete tool argument object can be emitted
+// more than once, producing strings such as `{}{} `. Stored sessions may retain
+// that malformed value, so normalize again immediately before sending a request.
+func sanitizeMessages(messages []Message) []Message {
+	out := make([]Message, len(messages))
+	copy(out, messages)
+	for i := range out {
+		if len(out[i].ToolCalls) == 0 {
+			continue
+		}
+		out[i].ToolCalls = append([]ToolCall(nil), out[i].ToolCalls...)
+		for j := range out[i].ToolCalls {
+			out[i].ToolCalls[j].Function.Arguments = normalizeToolArguments(out[i].ToolCalls[j].Function.Arguments)
+		}
+	}
+	return out
+}
+
+func normalizeToolArguments(arguments string) string {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" {
+		return `{}`
+	}
+	if json.Valid([]byte(trimmed)) {
+		return trimmed
+	}
+
+	decoder := json.NewDecoder(strings.NewReader(trimmed))
+	var first []byte
+	count := 0
+	for {
+		var raw json.RawMessage
+		err := decoder.Decode(&raw)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return arguments
+		}
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, raw); err != nil {
+			return arguments
+		}
+		if count == 0 {
+			first = append(first, compact.Bytes()...)
+		} else if !bytes.Equal(first, compact.Bytes()) {
+			return arguments
+		}
+		count++
+	}
+	if count > 1 {
+		return string(first)
+	}
+	return arguments
 }
 
 func readAPIError(resp *http.Response) error {
@@ -282,7 +339,7 @@ func AssembleToolCalls(deltas []ToolCallDelta) []ToolCall {
 			ExtraContent: a.extra,
 			Function: FunctionCall{
 				Name:      a.name,
-				Arguments: a.args,
+				Arguments: normalizeToolArguments(a.args),
 			},
 		})
 	}

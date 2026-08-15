@@ -64,6 +64,61 @@ func TestAssembleToolCallsWholeChunk(t *testing.T) {
 	}
 }
 
+func TestAssembleToolCallsDeduplicatesRepeatedCompleteArguments(t *testing.T) {
+	part := ToolCallDelta{Index: 0, ID: "call_10", Type: "function", Function: struct {
+		Name      string `json:"name,omitempty"`
+		Arguments string `json:"arguments,omitempty"`
+	}{Name: "get_timeline", Arguments: `{}`}}
+	got := AssembleToolCalls([]ToolCallDelta{part, part})
+	if len(got) != 1 {
+		t.Fatalf("len=%d", len(got))
+	}
+	if got[0].Function.Arguments != `{}` {
+		t.Fatalf("arguments=%q", got[0].Function.Arguments)
+	}
+}
+
+func TestCompatClientSanitizesRepeatedArgumentsFromStoredSession(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Messages []Message `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		got := request.Messages[0].ToolCalls[0].Function.Arguments
+		if got != `{}` {
+			t.Errorf("arguments=%q", got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	c := NewCompatClient(srv.URL+"/v1", "test-key", "gemini-test")
+	c.HTTPClient = srv.Client()
+	stream, err := c.Stream(context.Background(), Request{
+		Messages: []Message{
+			{
+				Role: RoleAssistant,
+				ToolCalls: []ToolCall{
+					{ID: "call_10", Type: "function", Function: FunctionCall{
+						Name: "get_timeline", Arguments: `{}{} `,
+					}},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for delta := range stream {
+		if delta.Err != nil {
+			t.Fatal(delta.Err)
+		}
+	}
+}
+
 func TestAssembleToolCallsPreservesGeminiThoughtSignature(t *testing.T) {
 	extra := json.RawMessage(`{"google":{"thought_signature":"encrypted-signature"}}`)
 	got := AssembleToolCalls([]ToolCallDelta{{

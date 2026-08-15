@@ -6,13 +6,14 @@ import "encoding/json"
 type EventType string
 
 const (
-	EventSession    EventType = "session"
-	EventStep       EventType = "step"
-	EventText       EventType = "text"
-	EventToolCall   EventType = "tool_call"
-	EventToolResult EventType = "tool_result"
-	EventDone       EventType = "done"
-	EventError      EventType = "error"
+	EventSession        EventType = "session"
+	EventStep           EventType = "step"
+	EventText           EventType = "text"
+	EventToolCall       EventType = "tool_call"
+	EventToolResult     EventType = "tool_result"
+	EventDone           EventType = "done"
+	EventError          EventType = "error"
+	EventProjectChanged EventType = "project_changed"
 )
 
 // Event is one realtime update from the agent loop.
@@ -69,4 +70,10 @@ type DonePayload struct {
 
 type ErrorPayload struct {
 	Message string `json:"message"`
+}
+
+type ProjectChangedPayload struct {
+	ProjectID       string `json:"project_id"`
+	Revision        int    `json:"revision"`
+	TimelineChanged bool   `json:"timeline_changed"`
 }

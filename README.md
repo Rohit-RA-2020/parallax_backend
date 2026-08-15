@@ -103,12 +103,19 @@ scoped to that directory for the whole session.
 | `DELETE` | `/v1/projects/{id}/chats/{chatId}` | Delete a chat |
 | `GET` | `/v1/projects/{id}/timeline` | Load the persisted sequence (clips, in-points, playhead) |
 | `PUT` | `/v1/projects/{id}/timeline` | Atomically save the sequence as a frame-accurate document |
+| `GET` | `/v1/projects/{id}/history` | List immutable revisions, branches, and checkpoints |
+| `POST` | `/v1/projects/{id}/history/undo` | Move to the parent revision |
+| `POST` | `/v1/projects/{id}/history/redo` | Move to a redo candidate |
+| `POST` | `/v1/projects/{id}/history/restore` | Restore any revision without deleting alternate futures |
+| `POST` | `/v1/projects/{id}/checkpoints` | Name the current or selected revision |
 
 Include `project_id` and `session_id` (the chat id) in `/v1/agent/chat`
-requests. The agent only sees files inside that project's workspace. Edits of
-an existing clip replace that file in place; the bin does not collect a new
-copy on every process. Pass `apply_to: "none"` only when the user wants a
-separate export.
+requests. The agent only sees files inside that project's workspace. Director
+timeline and media changes are staged for the request and commit as one
+revision. Timeline-representable edits remain non-destructive. FFmpeg
+fallbacks keep one logical bin item while content-addressed objects preserve
+the previous bytes for undo. Pass `apply_to: "none"` only when the user wants
+a separate generated asset or export.
 
 ## Chat (SSE)
 
@@ -143,6 +150,12 @@ project fps, source in-points, and media paths (not playback URLs).
 | `inspect_file`   | Size / mtime |
 | `probe_media`    | `ffprobe` JSON |
 | `run_ffmpeg`     | One validated ffmpeg/ffprobe command |
+| `get_timeline` | Inspect stable timeline IDs and editable properties |
+| `edit_timeline` | Stage validated effects, keyframes, cuts, and transitions |
+| `get_project_history` | Inspect revisions, alternate futures, and checkpoints |
+| `undo_project_change` / `redo_project_change` | Stage persistent history navigation |
+| `restore_project_revision` | Restore a selected revision |
+| `create_project_checkpoint` | Name the state committed by the current request |
 
 ## Tests
 

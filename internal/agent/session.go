@@ -100,8 +100,10 @@ func PublicHistory(msgs []llm.Message) []llm.Message {
 	return out
 }
 
-// Trim keeps the system prompt and a suffix of recent messages without
-// splitting a tool_call / tool-result pair.
+// Trim keeps the system prompt and a suffix of complete conversation turns.
+// Starting at a user message is important for providers such as Gemini, which
+// reject orphaned function calls or function responses at the start of replayed
+// history.
 func Trim(msgs []llm.Message, max int) []llm.Message {
 	if max < 4 || len(msgs) <= max {
 		return msgs
@@ -112,11 +114,13 @@ func Trim(msgs []llm.Message, max int) []llm.Message {
 		system = msgs[:1]
 		rest = msgs[1:]
 	}
-	for len(system)+len(rest) > max && len(rest) > 2 {
-		rest = rest[1:]
-		if len(rest) > 0 && rest[0].Role == llm.RoleTool {
-			continue
-		}
+	budget := max - len(system)
+	start := len(rest) - budget
+	if start < 0 {
+		start = 0
 	}
-	return append(append([]llm.Message{}, system...), rest...)
+	for start < len(rest) && rest[start].Role != llm.RoleUser {
+		start++
+	}
+	return append(append([]llm.Message{}, system...), rest[start:]...)
 }

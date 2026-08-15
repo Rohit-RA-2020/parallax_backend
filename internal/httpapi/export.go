@@ -130,18 +130,78 @@ func sequenceClips(doc projects.Timeline) []ffmpeg.SequenceClip {
 		fps = 24
 	}
 	rate := float64(fps)
+	fadeIn := map[string]projects.TimelineTransition{}
+	fadeOut := map[string]projects.TimelineTransition{}
+	for _, transition := range doc.Transitions {
+		fadeIn[transition.ToID] = transition
+		if transition.Type != "crossfade" {
+			fadeOut[transition.FromID] = transition
+		}
+	}
 	out := make([]ffmpeg.SequenceClip, 0, len(doc.Clips))
 	for _, clip := range doc.Clips {
-		out = append(out, ffmpeg.SequenceClip{
-			Track:     clip.Track,
-			Kind:      clip.Kind,
-			Path:      clip.MediaPath,
-			Name:      clip.Name,
-			MediaType: clip.MediaType,
-			Start:     float64(clip.StartFrame) / rate,
-			Duration:  float64(clip.DurationFrames) / rate,
-			SourceIn:  float64(clip.SourceInFrame) / rate,
-		})
+		item := ffmpeg.SequenceClip{
+			Track:        clip.Track,
+			Kind:         clip.Kind,
+			Path:         clip.MediaPath,
+			Name:         clip.Name,
+			MediaType:    clip.MediaType,
+			Start:        float64(clip.StartFrame) / rate,
+			Duration:     float64(clip.DurationFrames) / rate,
+			SourceIn:     float64(clip.SourceInFrame) / rate,
+			CanvasWidth:  doc.Canvas.Width,
+			CanvasHeight: doc.Canvas.Height,
+		}
+		if clip.Transform != nil {
+			item.X = clip.Transform.X
+			item.Y = clip.Transform.Y
+			item.AnchorX = clip.Transform.AnchorX
+			item.AnchorY = clip.Transform.AnchorY
+			item.Opacity = clip.Transform.Opacity
+			item.ScaleX = clip.Transform.ScaleX
+			item.ScaleY = clip.Transform.ScaleY
+			item.Rotation = clip.Transform.Rotation
+			item.CropTop = clip.Transform.CropTop
+			item.CropRight = clip.Transform.CropRight
+			item.CropBottom = clip.Transform.CropBottom
+			item.CropLeft = clip.Transform.CropLeft
+		}
+		if clip.Title != nil {
+			item.TitleText = clip.Title.Text
+			item.FontSize = clip.Title.FontSize
+			item.Fill = clip.Title.Fill
+		}
+		if clip.Playback != nil {
+			item.PlaybackRate = clip.Playback.Rate
+		}
+		if clip.Audio != nil {
+			item.VolumeDB = clip.Audio.VolumeDB
+			item.Muted = clip.Audio.Muted
+		}
+		if clip.Grade != nil {
+			item.Exposure = clip.Grade.Exposure
+			item.Contrast = clip.Grade.Contrast
+			item.Saturation = clip.Grade.Saturation
+		}
+		for _, key := range clip.Keyframes {
+			if key.Property == "transform.opacity" {
+				item.OpacityKeys = append(item.OpacityKeys, ffmpeg.SequenceKeyframe{Frame: key.Frame, Value: key.Value, Easing: key.Easing})
+			}
+		}
+		if transition, ok := fadeIn[clip.ID]; ok {
+			item.FadeIn = float64(transition.DurationFrames) / rate
+			item.CrossfadeIn = transition.Type == "crossfade"
+			if transition.Type == "dip_white" {
+				item.FadeColor = "white"
+			}
+		}
+		if transition, ok := fadeOut[clip.ID]; ok {
+			item.FadeOut = float64(transition.DurationFrames) / rate
+			if transition.Type == "dip_white" {
+				item.FadeColor = "white"
+			}
+		}
+		out = append(out, item)
 	}
 	return out
 }

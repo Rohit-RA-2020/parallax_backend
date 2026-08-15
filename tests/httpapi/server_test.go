@@ -557,6 +557,61 @@ func TestProjectTimelineRoundTrip(t *testing.T) {
 	}
 }
 
+func TestEmptyHistorySerializesArrays(t *testing.T) {
+	s := testServer(t, fakeProvider{})
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	project, err := s.Projects.Create("Empty history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Get(ts.URL + "/v1/projects/" + project.ID + "/history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Redo      json.RawMessage `json:"redo_candidates"`
+		Revisions []struct {
+			Children    json.RawMessage `json:"children"`
+			Checkpoints json.RawMessage `json:"checkpoints"`
+		} `json:"revisions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if string(body.Redo) != "[]" || len(body.Revisions) != 1 || string(body.Revisions[0].Children) != "[]" || string(body.Revisions[0].Checkpoints) != "[]" {
+		t.Fatalf("history arrays: redo=%s revisions=%+v", body.Redo, body.Revisions)
+	}
+}
+
+func TestTimelinePreflightAllowsRevisionHeaders(t *testing.T) {
+	s := testServer(t, fakeProvider{})
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	req, err := http.NewRequest(http.MethodOptions, ts.URL+"/v1/projects/project/timeline", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "http://localhost:5173")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPut)
+	req.Header.Set("Access-Control-Request-Headers", "content-type,x-expected-revision,x-change-summary")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	headers := strings.ToLower(resp.Header.Get("Access-Control-Allow-Headers"))
+	for _, required := range []string{"content-type", "x-expected-revision", "x-change-summary"} {
+		if !strings.Contains(headers, required) {
+			t.Fatalf("missing %s in %q", required, headers)
+		}
+	}
+}
+
 func TestChatRejectsUnknownProject(t *testing.T) {
 	s := testServer(t, fakeProvider{})
 	ts := httptest.NewServer(s.Handler())
