@@ -242,6 +242,20 @@ func (s *Store) ResolveFile(id, rel string) (string, error) {
 	return real, nil
 }
 
+func (s *Store) DeleteFile(id, rel string) error {
+	full, err := s.ResolveFile(id, rel)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(full); err != nil {
+		if os.IsNotExist(err) {
+			return ErrNotFound
+		}
+		return err
+	}
+	return s.Touch(id)
+}
+
 func writeProject(p Project) error {
 	metaDir := filepath.Join(p.Dir, ".parallax")
 	if err := os.MkdirAll(metaDir, 0o700); err != nil {

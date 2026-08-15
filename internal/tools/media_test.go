@@ -9,6 +9,14 @@ import (
 	"testing"
 )
 
+func mustJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
 func TestListAndInspect(t *testing.T) {
 	ws := t.TempDir()
 	if err := os.WriteFile(filepath.Join(ws, "talk.mp4"), []byte("not-really-video"), 0o644); err != nil {
@@ -61,6 +69,42 @@ func TestRunFFmpegLavfiViaTool(t *testing.T) {
 		t.Fatalf("%s (%v)", res.Error, res.Output)
 	}
 	if _, err := os.Stat(filepath.Join(ws, "clip.mp4")); err != nil {
+		t.Fatal(err)
+	}
+
+	muted := reg.Execute(context.Background(), "run_ffmpeg", mustJSON(map[string]any{
+		"rationale": "strip audio as an in-place edit",
+		"args": []string{
+			"-y", "-i", "clip.mp4", "-c:v", "copy", "-an", "clip_muted.mp4",
+		},
+		"timeout_seconds": 20,
+	}))
+	if !muted.OK {
+		t.Fatalf("in-place mute: %s (%v)", muted.Error, muted.Output)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "clip.mp4")); err != nil {
+		t.Fatal("source clip was removed instead of being updated")
+	}
+	if _, err := os.Stat(filepath.Join(ws, "clip_muted.mp4")); !os.IsNotExist(err) {
+		t.Fatal("in-place edit left a sibling copy")
+	}
+	out := muted.Output.(map[string]any)
+	if out["applied_to"] != "clip.mp4" {
+		t.Fatalf("applied_to=%v", out["applied_to"])
+	}
+
+	keep := reg.Execute(context.Background(), "run_ffmpeg", mustJSON(map[string]any{
+		"rationale": "keep a separate export",
+		"apply_to":  "none",
+		"args": []string{
+			"-y", "-i", "clip.mp4", "-c:v", "copy", "-an", "highlight.mp4",
+		},
+		"timeout_seconds": 20,
+	}))
+	if !keep.OK {
+		t.Fatalf("keep output: %s (%v)", keep.Error, keep.Output)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "highlight.mp4")); err != nil {
 		t.Fatal(err)
 	}
 

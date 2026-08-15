@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -63,7 +64,7 @@ func RegisterMedia(reg *Registry, env MediaEnv) {
 
 	reg.Register(llm.NewFunctionTool(
 		"run_ffmpeg",
-		"Execute one validated ffmpeg or ffprobe command inside the workspace sandbox. Prefer the args array (no binary name). The command string form is accepted as a fallback and is parsed without a shell. All input and output paths must stay inside the workspace. On failure, read stderr and fix the command.",
+		"Execute one validated ffmpeg or ffprobe command inside the workspace sandbox. Prefer the args array (no binary name). The command string form is accepted as a fallback and is parsed without a shell. All input and output paths must stay inside the workspace. Transforms of an existing clip are applied back onto that clip (no duplicate bin items). Pass apply_to \"none\" only when the user wants a separate export or a new generated file. On failure, read stderr and fix the command.",
 		json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -74,11 +75,15 @@ func RegisterMedia(reg *Registry, env MediaEnv) {
 				"args": {
 					"type": "array",
 					"items": {"type": "string"},
-					"description": "Argv WITHOUT the binary. Example: [\"-y\",\"-i\",\"in.mp4\",\"-c:v\",\"copy\",\"-an\",\"out.mp4\"]"
+					"description": "Argv WITHOUT the binary. Example: [\"-y\",\"-i\",\"media/talk.mp4\",\"-c:v\",\"copy\",\"-an\",\"media/talk_tmp.mp4\"]"
 				},
 				"command": {
 					"type": "string",
 					"description": "Full command beginning with ffmpeg or ffprobe. Used only when args is empty. No pipes, redirections, or shell syntax."
+				},
+				"apply_to": {
+					"type": "string",
+					"description": "Existing workspace file to update in place after success. Omit to auto-apply when there is a single same-kind source and the output looks like an edit of it. Set to \"none\" to keep a new file (export, highlight, thumbnail, extract)."
 				},
 				"timeout_seconds": {
 					"type": "integer",
@@ -237,6 +242,7 @@ func (e MediaEnv) runFFmpeg(ctx context.Context, raw json.RawMessage) Result {
 		Rationale      string   `json:"rationale"`
 		Args           []string `json:"args"`
 		Command        string   `json:"command"`
+		ApplyTo        string   `json:"apply_to"`
 		TimeoutSeconds int      `json:"timeout_seconds"`
 	}
 	if err := json.Unmarshal(raw, &in); err != nil {
@@ -258,7 +264,37 @@ func (e MediaEnv) runFFmpeg(ctx context.Context, raw json.RawMessage) Result {
 		tokens = parsed
 	}
 
-	cmd, err := ffmpeg.Validate(tokens, ffmpeg.ValidateOpts{
+	kind, args, err := ffmpeg.Normalize(tokens)
+	if err != nil {
+		return Result{OK: false, Error: "invalid ffmpeg command: " + err.Error()}
+	}
+
+	applyTo := ""
+	if kind != ffmpeg.KindFFprobe {
+		var applyErr error
+		applyTo, applyErr = resolveApplyTo(e.Workspace, args, in.ApplyTo)
+		if applyErr != nil {
+			return Result{OK: false, Error: applyErr.Error()}
+		}
+	}
+
+	scratchRel := ""
+	runArgs := args
+	if applyTo != "" {
+		ext := filepath.Ext(applyTo)
+		if ext == "" {
+			if io := ffmpeg.ParseMediaIO(args); len(io.Outputs) > 0 {
+				ext = filepath.Ext(io.Outputs[0])
+			}
+			if ext == "" {
+				ext = ".mp4"
+			}
+		}
+		scratchRel = filepath.ToSlash(filepath.Join(".scratch", "edit-"+newScratchID()+ext))
+		runArgs = ffmpeg.RewriteOutput(args, scratchRel)
+	}
+
+	cmd, err := ffmpeg.Validate(runArgs, ffmpeg.ValidateOpts{
 		Workspace:    e.Workspace,
 		AllowNetwork: e.AllowNet,
 	})
@@ -274,6 +310,12 @@ func (e MediaEnv) runFFmpeg(ctx context.Context, raw json.RawMessage) Result {
 		}
 	}
 
+	if scratchRel != "" {
+		if err := os.MkdirAll(filepath.Join(e.Workspace, ".scratch"), 0o755); err != nil {
+			return Result{OK: false, Error: err.Error()}
+		}
+	}
+
 	res, err := ffmpeg.Run(ctx, e.Bins, cmd, e.Workspace, timeout)
 	out := map[string]any{
 		"rationale": in.Rationale,
@@ -285,9 +327,125 @@ func (e MediaEnv) runFFmpeg(ctx context.Context, raw json.RawMessage) Result {
 		"stderr":    trimOutput(res.Stderr, 12<<10),
 	}
 	if err != nil {
+		if scratchRel != "" {
+			_ = os.Remove(filepath.Join(e.Workspace, filepath.FromSlash(scratchRel)))
+		}
 		return Result{OK: false, Error: err.Error(), Output: out}
 	}
+
+	if applyTo != "" {
+		if err := replaceWorkspaceFile(e.Workspace, scratchRel, applyTo); err != nil {
+			return Result{OK: false, Error: "applied render failed: " + err.Error(), Output: out}
+		}
+		out["applied_to"] = applyTo
+		out["in_place"] = true
+		out["note"] = "Output replaced the existing clip. The project still has one current version of this file."
+	} else if io := ffmpeg.ParseMediaIO(args); len(io.Outputs) > 0 {
+		out["output"] = io.Outputs[0]
+		out["in_place"] = false
+	}
 	return Result{OK: true, Output: out}
+}
+
+func resolveApplyTo(workspace string, args []string, raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if strings.EqualFold(raw, "none") || strings.EqualFold(raw, "false") || raw == "-" {
+		return "", nil
+	}
+	if raw != "" {
+		abs, err := ffmpeg.ResolveInWorkspace(workspace, raw)
+		if err != nil {
+			return "", fmt.Errorf("apply_to: %w", err)
+		}
+		rel, err := filepath.Rel(workspace, abs)
+		if err != nil {
+			return "", err
+		}
+		return filepath.ToSlash(rel), nil
+	}
+
+	io := ffmpeg.ParseMediaIO(args)
+	if len(io.Outputs) != 1 {
+		return "", nil
+	}
+	output := io.Outputs[0]
+	var sameKind []string
+	for _, in := range io.Inputs {
+		if ffmpeg.SameMediaKind(in, output) {
+			sameKind = append(sameKind, in)
+		}
+	}
+	if len(sameKind) != 1 {
+		return "", nil
+	}
+	source := sameKind[0]
+	if filepath.Clean(source) == filepath.Clean(output) || ffmpeg.LooksLikeDerivative(source, output) || ffmpeg.GenericOutputName(output) {
+		abs, err := ffmpeg.ResolveInWorkspace(workspace, source)
+		if err != nil {
+			return "", err
+		}
+		rel, err := filepath.Rel(workspace, abs)
+		if err != nil {
+			return "", err
+		}
+		return filepath.ToSlash(rel), nil
+	}
+	return "", nil
+}
+
+func replaceWorkspaceFile(workspace, fromRel, toRel string) error {
+	fromAbs, err := ffmpeg.ResolveInWorkspace(workspace, fromRel)
+	if err != nil {
+		return err
+	}
+	toAbs, err := ffmpeg.ResolveInWorkspace(workspace, toRel)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(fromAbs); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(toAbs), 0o755); err != nil {
+		return err
+	}
+	if err := os.Rename(fromAbs, toAbs); err == nil {
+		return nil
+	}
+	src, err := os.Open(fromAbs)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	tmp, err := os.CreateTemp(filepath.Dir(toAbs), ".apply-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	ok := false
+	defer func() {
+		_ = tmp.Close()
+		if !ok {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := io.Copy(tmp, src); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, toAbs); err != nil {
+		return err
+	}
+	ok = true
+	return os.Remove(fromAbs)
+}
+
+func newScratchID() string {
+	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
 func isMediaName(name string) bool {

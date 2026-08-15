@@ -114,6 +114,31 @@ func TestProjectUploadAndServe(t *testing.T) {
 	if string(served) != "video-bytes" {
 		t.Fatalf("served=%q", served)
 	}
+
+	req, _ = http.NewRequest(http.MethodDelete, ts.URL+strings.Split(upload.Media[0].ContentURL, "?")[0], nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("delete %s %s", resp.Status, raw)
+	}
+	resp, err = http.Get(ts.URL + "/v1/projects/" + created.ID + "/media")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var listed struct {
+		Media []struct{} `json:"media"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Media) != 0 {
+		t.Fatalf("listed=%+v", listed)
+	}
 }
 
 func TestHealthAndSettings(t *testing.T) {
@@ -201,6 +226,90 @@ func TestChatSSE(t *testing.T) {
 	}
 	if !strings.Contains(out, "event: done") {
 		t.Fatalf("missing done: %s", out)
+	}
+}
+
+func TestProjectChatsPersist(t *testing.T) {
+	s := testServer(t, fakeProvider{deltas: []llm.Delta{
+		{Content: "Muted the clip.", FinishReason: "stop"},
+	}})
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	project, err := s.Projects.Create("Persisted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(ts.URL+"/v1/projects/"+project.ID+"/chats", "application/json", strings.NewReader(`{"title":"Grade"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatal(resp.Status)
+	}
+	var created struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Title != "Grade" {
+		t.Fatalf("title=%s", created.Title)
+	}
+
+	body := `{"project_id":"` + project.ID + `","session_id":"` + created.ID + `","message":"mute the clip"}`
+	resp, err = http.Post(ts.URL+"/v1/agent/chat", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatal(resp.Status)
+	}
+	_, _ = io.ReadAll(resp.Body)
+
+	resp, err = http.Get(ts.URL + "/v1/projects/" + project.ID + "/chats/" + created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var got struct {
+		Title    string `json:"title"`
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Messages) < 2 {
+		t.Fatalf("messages=%+v", got.Messages)
+	}
+	if got.Messages[0].Role != "user" || got.Messages[0].Content != "mute the clip" {
+		t.Fatalf("first=%+v", got.Messages[0])
+	}
+	if !strings.Contains(got.Messages[len(got.Messages)-1].Content, "Muted") {
+		t.Fatalf("assistant=%+v", got.Messages)
+	}
+
+	resp, err = http.Get(ts.URL + "/v1/projects/" + project.ID + "/chats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var listed struct {
+		Chats []struct {
+			ID string `json:"id"`
+		} `json:"chats"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Chats) != 1 || listed.Chats[0].ID != created.ID {
+		t.Fatalf("listed=%+v", listed)
 	}
 }
 

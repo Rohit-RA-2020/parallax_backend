@@ -61,7 +61,7 @@ func (a *Agent) Run(ctx context.Context, in Input, emit Sink) Outcome {
 
 	messages := append([]llm.Message(nil), in.Messages...)
 	if len(messages) == 0 || messages[0].Role != llm.RoleSystem {
-		messages = append([]llm.Message{{Role: llm.RoleSystem, Content: systemPrompt}}, messages...)
+		messages = append([]llm.Message{{Role: llm.RoleSystem, Content: SystemPrompt}}, messages...)
 	}
 
 	specs := a.Tools.Specs()

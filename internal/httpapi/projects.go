@@ -141,14 +141,96 @@ func (s *Server) handleProjectFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Disposition", `inline; filename="`+strings.ReplaceAll(filepath.Base(full), `"`, "")+`"`)
-	w.Header().Set("Cache-Control", "private, max-age=3600")
+	w.Header().Set("Cache-Control", "private, no-cache")
 	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 }
 
-func mediaResponses(projectID string, media []projects.Media) []mediaResponse {
-	out := make([]mediaResponse, 0, len(media))
-	for _, item := range media {
-		out = append(out, mediaResponse{Media: item, ContentURL: projectFileURL(projectID, item.Path)})
+func (s *Server) handleDeleteProjectFile(w http.ResponseWriter, r *http.Request) {
+	if err := s.Projects.DeleteFile(r.PathValue("id"), r.PathValue("path")); err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type createChatRequest struct {
+	Title string `json:"title"`
+}
+
+type renameChatRequest struct {
+	Title string `json:"title"`
+}
+
+func (s *Server) handleListChats(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	chats, err := s.Projects.ListChats(id)
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"chats": chats})
+}
+
+func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body createChatRequest
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+	}
+	chat, err := s.Projects.CreateChat(id, body.Title)
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	_ = s.Projects.Touch(id)
+	writeJSON(w, http.StatusCreated, chatResponse(chat, false))
+}
+
+func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request) {
+	chat, err := s.Projects.GetChat(r.PathValue("id"), r.PathValue("chatId"))
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, chatResponse(chat, true))
+}
+
+func (s *Server) handlePatchChat(w http.ResponseWriter, r *http.Request) {
+	var body renameChatRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	chat, err := s.Projects.RenameChat(r.PathValue("id"), r.PathValue("chatId"), body.Title)
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	_ = s.Projects.Touch(r.PathValue("id"))
+	writeJSON(w, http.StatusOK, chatResponse(chat, false))
+}
+
+func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
+	if err := s.Projects.DeleteChat(r.PathValue("id"), r.PathValue("chatId")); err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	s.Sessions.Delete(r.PathValue("chatId"))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func chatResponse(chat projects.Chat, includeMessages bool) map[string]any {
+	out := map[string]any{
+		"id":         chat.ID,
+		"title":      chat.Title,
+		"created_at": chat.CreatedAt,
+		"updated_at": chat.UpdatedAt,
+	}
+	if includeMessages {
+		out["messages"] = projects.PublicChatMessages(chat.Messages)
 	}
 	return out
 }
@@ -161,8 +243,20 @@ func projectFileURL(projectID, path string) string {
 	return "/v1/projects/" + url.PathEscape(projectID) + "/files/" + strings.Join(parts, "/")
 }
 
+func mediaResponses(projectID string, media []projects.Media) []mediaResponse {
+	out := make([]mediaResponse, 0, len(media))
+	for _, item := range media {
+		u := projectFileURL(projectID, item.Path)
+		if !item.ModifiedAt.IsZero() {
+			u += "?t=" + url.QueryEscape(item.ModifiedAt.UTC().Format("20060102150405"))
+		}
+		out = append(out, mediaResponse{Media: item, ContentURL: u})
+	}
+	return out
+}
+
 func writeProjectError(w http.ResponseWriter, err error) {
-	if errors.Is(err, projects.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
+	if errors.Is(err, projects.ErrNotFound) || errors.Is(err, projects.ErrChatNotFound) || errors.Is(err, os.ErrNotExist) {
 		writeError(w, http.StatusNotFound, "project or media not found")
 		return
 	}

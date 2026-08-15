@@ -54,6 +54,12 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /v1/projects/{id}/media", s.handleListMedia)
 		mux.HandleFunc("POST /v1/projects/{id}/media", s.handleUploadMedia)
 		mux.HandleFunc("GET /v1/projects/{id}/files/{path...}", s.handleProjectFile)
+		mux.HandleFunc("DELETE /v1/projects/{id}/files/{path...}", s.handleDeleteProjectFile)
+		mux.HandleFunc("GET /v1/projects/{id}/chats", s.handleListChats)
+		mux.HandleFunc("POST /v1/projects/{id}/chats", s.handleCreateChat)
+		mux.HandleFunc("GET /v1/projects/{id}/chats/{chatId}", s.handleGetChat)
+		mux.HandleFunc("PATCH /v1/projects/{id}/chats/{chatId}", s.handlePatchChat)
+		mux.HandleFunc("DELETE /v1/projects/{id}/chats/{chatId}", s.handleDeleteChat)
 	}
 	return withCORS(withLog(s.log(), mux))
 }
@@ -113,12 +119,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	toolRegistry := s.Tools
-	if strings.TrimSpace(req.ProjectID) != "" {
+	projectID := strings.TrimSpace(req.ProjectID)
+	if projectID != "" {
 		if s.Projects == nil {
 			writeError(w, http.StatusBadRequest, "projects are not configured")
 			return
 		}
-		project, err := s.Projects.Get(req.ProjectID)
+		project, err := s.Projects.Get(projectID)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "project not found")
 			return
@@ -131,8 +138,29 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess := s.Sessions.GetOrCreateForProject(req.SessionID, strings.TrimSpace(req.ProjectID))
+	var sess *agent.Session
+	if projectID != "" {
+		chat, err := s.Projects.GetOrCreateChat(projectID, strings.TrimSpace(req.SessionID))
+		if err != nil {
+			writeProjectError(w, err)
+			return
+		}
+		sess = &agent.Session{
+			ID:        chat.ID,
+			ProjectID: projectID,
+			Messages:  chat.Messages,
+			UpdatedAt: chat.UpdatedAt,
+		}
+		s.Sessions.Remember(sess)
+	} else {
+		sess = s.Sessions.GetOrCreateForProject(req.SessionID, "")
+	}
 	msgs := append([]llm.Message(nil), sess.Messages...)
+	if len(msgs) == 0 || msgs[0].Role != llm.RoleSystem {
+		msgs = append([]llm.Message{{Role: llm.RoleSystem, Content: agent.SystemPrompt}}, msgs...)
+	} else {
+		msgs[0].Content = agent.SystemPrompt
+	}
 	if len(req.Messages) > 0 {
 		// Caller-supplied history replaces the conversation but keeps the system prompt.
 		msgs = []llm.Message{{Role: llm.RoleSystem, Content: msgs[0].Content}}
@@ -150,6 +178,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 		if !lastUser {
 			msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: userText})
+		}
+	}
+	if projectID != "" {
+		if saved, err := s.Projects.SaveChatMessages(projectID, sess.ID, msgs); err == nil {
+			sess.UpdatedAt = saved.UpdatedAt
 		}
 	}
 
@@ -181,8 +214,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		_ = stream.Event(ev)
 	})
 	s.Sessions.ReplaceMessages(sess.ID, out.Messages)
-	if strings.TrimSpace(req.ProjectID) != "" {
-		_ = s.Projects.Touch(req.ProjectID)
+	if projectID != "" {
+		if _, err := s.Projects.SaveChatMessages(projectID, sess.ID, out.Messages); err != nil {
+			s.log().Error("persist chat", "project", projectID, "chat", sess.ID, "err", err)
+		}
+		_ = s.Projects.Touch(projectID)
 	}
 }
 

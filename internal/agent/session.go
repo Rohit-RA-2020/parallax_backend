@@ -42,11 +42,20 @@ func (s *Store) GetOrCreateForProject(id, projectID string) *Session {
 	sess := &Session{
 		ID:        newID(),
 		ProjectID: projectID,
-		Messages:  []llm.Message{{Role: llm.RoleSystem, Content: systemPrompt}},
+		Messages:  []llm.Message{{Role: llm.RoleSystem, Content: SystemPrompt}},
 		UpdatedAt: time.Now(),
 	}
 	s.data[sess.ID] = sess
 	return sess
+}
+
+func (s *Store) Remember(sess *Session) {
+	if sess == nil || sess.ID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data[sess.ID] = sess
 }
 
 func (s *Store) Get(id string) (*Session, bool) {

@@ -37,6 +37,26 @@ func TestTokenizeQuotes(t *testing.T) {
 	}
 }
 
+func TestParseMediaIOAndDerivative(t *testing.T) {
+	io := ParseMediaIO([]string{"-y", "-i", "media/talk.mp4", "-i", "logo.png", "-c:v", "libx264", "media/talk_overlay.mp4"})
+	if len(io.Inputs) != 2 || io.Inputs[0] != "media/talk.mp4" || io.Inputs[1] != "logo.png" {
+		t.Fatalf("inputs=%v", io.Inputs)
+	}
+	if len(io.Outputs) != 1 || io.Outputs[0] != "media/talk_overlay.mp4" {
+		t.Fatalf("outputs=%v", io.Outputs)
+	}
+	if !LooksLikeDerivative("media/talk.mp4", "media/talk_overlay.mp4") {
+		t.Fatal("expected derivative")
+	}
+	if LooksLikeDerivative("media/talk.mp4", "media/highlight.mp4") {
+		t.Fatal("distinct export should not look like a derivative")
+	}
+	rewritten := RewriteOutput([]string{"-y", "-i", "media/talk.mp4", "media/talk_tmp.mp4"}, ".scratch/edit.mp4")
+	if rewritten[len(rewritten)-1] != ".scratch/edit.mp4" {
+		t.Fatalf("rewrite=%v", rewritten)
+	}
+}
+
 func TestValidateSandbox(t *testing.T) {
 	ws := t.TempDir()
 	opts := ValidateOpts{Workspace: ws}

@@ -76,7 +76,7 @@ func TestAgentLoopToolThenAnswer(t *testing.T) {
 	out := ag.Run(context.Background(), Input{
 		SessionID: "s1",
 		Messages: []llm.Message{
-			{Role: llm.RoleSystem, Content: systemPrompt},
+			{Role: llm.RoleSystem, Content: SystemPrompt},
 			{Role: llm.RoleUser, Content: "how long is talk.mp4?"},
 		},
 	}, func(ev Event) { events = append(events, ev) })

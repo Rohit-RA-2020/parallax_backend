@@ -84,10 +84,18 @@ scoped to that directory for the whole session.
 | `GET` | `/v1/projects/{id}/media` | List uploaded and generated media |
 | `POST` | `/v1/projects/{id}/media` | Upload one or more multipart `files` |
 | `GET` | `/v1/projects/{id}/files/{path...}` | Stream a project file with range support |
+| `DELETE` | `/v1/projects/{id}/files/{path...}` | Remove a media file from the project |
+| `GET` | `/v1/projects/{id}/chats` | List persisted Director chats |
+| `POST` | `/v1/projects/{id}/chats` | Start a new chat |
+| `GET` | `/v1/projects/{id}/chats/{chatId}` | Load a chat and its messages |
+| `PATCH` | `/v1/projects/{id}/chats/{chatId}` | Rename a chat |
+| `DELETE` | `/v1/projects/{id}/chats/{chatId}` | Delete a chat |
 
-Include `project_id` in `/v1/agent/chat` requests. The agent will only see and
-operate on files inside that project's workspace. New FFmpeg outputs appear in
-the project's media list after the operation.
+Include `project_id` and `session_id` (the chat id) in `/v1/agent/chat`
+requests. The agent only sees files inside that project's workspace. Edits of
+an existing clip replace that file in place; the bin does not collect a new
+copy on every process. Pass `apply_to: "none"` only when the user wants a
+separate export.
 
 ## Chat (SSE)
 
@@ -109,7 +117,8 @@ Events:
 | `done`        | `{reason, iterations}` |
 | `error`       | `{message}` |
 
-Pass `session_id` on the next request to continue the same conversation.
+Pass `session_id` on the next request to continue the same conversation. Project
+chats are written under `.parallax/chats/` and survive server restarts.
 
 ## Tools
 

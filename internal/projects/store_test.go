@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"parallax/internal/llm"
 )
 
 func TestProjectUploadAndReload(t *testing.T) {
@@ -34,6 +36,68 @@ func TestProjectUploadAndReload(t *testing.T) {
 	}
 	if got, err := reloaded.Get(p.ID); err != nil || got.Name != p.Name {
 		t.Fatalf("project=%+v err=%v", got, err)
+	}
+	if err := reloaded.DeleteFile(p.ID, media.Path); err != nil {
+		t.Fatal(err)
+	}
+	items, err = reloaded.ListMedia(p.ID)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("after delete items=%+v err=%v", items, err)
+	}
+}
+
+func TestChatsPersistAcrossReload(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := store.Create("Talk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.CreateChat(p.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.CreateChat(p.ID, "Color pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID {
+		t.Fatal("expected distinct chats")
+	}
+	if _, err := store.SaveChatMessages(p.ID, first.ID, []llm.Message{
+		{Role: llm.RoleUser, Content: "Mute the highway shot"},
+		{Role: llm.RoleAssistant, Content: "Done. Audio is stripped."},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := reloaded.ListChats(p.ID)
+	if err != nil || len(listed) != 2 {
+		t.Fatalf("listed=%+v err=%v", listed, err)
+	}
+	loaded, err := reloaded.GetChat(p.ID, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Title != "Mute the highway shot" {
+		t.Fatalf("title=%q", loaded.Title)
+	}
+	if len(loaded.Messages) != 2 || loaded.Messages[0].Content != "Mute the highway shot" {
+		t.Fatalf("messages=%+v", loaded.Messages)
+	}
+	if err := reloaded.DeleteChat(p.ID, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	listed, err = reloaded.ListChats(p.ID)
+	if err != nil || len(listed) != 1 || listed[0].ID != first.ID {
+		t.Fatalf("after delete listed=%+v err=%v", listed, err)
 	}
 }
 
