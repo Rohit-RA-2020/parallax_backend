@@ -20,7 +20,7 @@ const (
 	DefaultAddr      = ":8080"
 	DefaultBaseURL   = "https://api.x.ai/v1"
 	DefaultModel     = "grok-4.6"
-	DefaultMaxIters  = 12
+	DefaultMaxIters  = 50
 	defaultProfileID = "default"
 )
 
@@ -41,16 +41,32 @@ type Settings struct {
 
 // Config is the process-wide snapshot used at startup.
 type Config struct {
-	Addr         string
-	WorkspaceDir string
-	DataDir      string
-	SettingsPath string
-	ExaAPIKey    string
-	ExaBaseURL   string
-	MaxIters     int
-	FFmpegBin    string
-	FFprobeBin   string
-	LLMs         []LLM
+	Addr           string
+	WorkspaceDir   string
+	DataDir        string
+	SettingsPath   string
+	ExaAPIKey      string
+	ExaBaseURL     string
+	MaxIters       int
+	FFmpegBin      string
+	FFprobeBin     string
+	LLMs           []LLM
+	Embedding      Embedding
+	QdrantURL      string
+	QdrantAPIKey   string
+	WhisperModel   string
+	WhisperDevice  string
+	WhisperPython  string
+	WhisperScript  string
+	WhisperCompute string
+}
+
+// Embedding is a separate OpenAI-compatible /v1/embeddings endpoint.
+// It must not reuse LLM_* credentials.
+type Embedding struct {
+	BaseURL string
+	APIKey  string
+	Model   string
 }
 
 // Load reads optional .env files, then environment variables.
@@ -86,6 +102,18 @@ func Load() (Config, error) {
 		FFmpegBin:    envOr("FFMPEG_BIN", "ffmpeg"),
 		FFprobeBin:   envOr("FFPROBE_BIN", "ffprobe"),
 		LLMs:         LoadLLMProfiles(),
+		Embedding: Embedding{
+			BaseURL: strings.TrimRight(strings.TrimSpace(os.Getenv("EMBEDDING_BASE_URL")), "/"),
+			APIKey:  strings.TrimSpace(os.Getenv("EMBEDDING_API_KEY")),
+			Model:   strings.TrimSpace(os.Getenv("EMBEDDING_MODEL")),
+		},
+		QdrantURL:      strings.TrimRight(envOr("QDRANT_URL", "http://127.0.0.1:6333"), "/"),
+		QdrantAPIKey:   strings.TrimSpace(os.Getenv("QDRANT_API_KEY")),
+		WhisperModel:   envOr("WHISPER_MODEL", "large-v3-turbo"),
+		WhisperDevice:  strings.ToLower(envOr("WHISPER_DEVICE", "auto")),
+		WhisperPython:  resolveExisting(envOr("WHISPER_PYTHON", filepath.Join("scripts", ".venv", "bin", "python")), cwd),
+		WhisperScript:  resolveExisting(envOr("WHISPER_SCRIPT", filepath.Join("scripts", "transcribe.py")), cwd),
+		WhisperCompute: envOr("WHISPER_COMPUTE", "int8"),
 	}
 
 	if cfg.MaxIters < 1 {
@@ -152,6 +180,23 @@ func ValidateLLM(l LLM) error {
 	}
 	if !strings.HasPrefix(l.BaseURL, "http://") && !strings.HasPrefix(l.BaseURL, "https://") {
 		return errors.New("base_url must start with http:// or https://")
+	}
+	return nil
+}
+
+// ValidateEmbedding checks the dedicated embeddings endpoint.
+func ValidateEmbedding(e Embedding) error {
+	if strings.TrimSpace(e.BaseURL) == "" {
+		return errors.New("embedding base_url is required")
+	}
+	if strings.TrimSpace(e.Model) == "" {
+		return errors.New("embedding model is required")
+	}
+	if strings.TrimSpace(e.APIKey) == "" {
+		return errors.New("embedding api_key is required")
+	}
+	if !strings.HasPrefix(e.BaseURL, "http://") && !strings.HasPrefix(e.BaseURL, "https://") {
+		return errors.New("embedding base_url must start with http:// or https://")
 	}
 	return nil
 }
@@ -387,6 +432,40 @@ func findProfile(profiles []LLM, id string) (LLM, bool) {
 func hasProfileID(profiles []LLM, id string) bool {
 	_, ok := findProfile(profiles, id)
 	return ok
+}
+
+// resolveExisting turns a relative whisper path into an absolute one.
+// The server is often started from the repo root, not parallax_backend/.
+func resolveExisting(path, cwd string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if filepath.IsAbs(path) {
+		return path
+	}
+	candidates := []string{
+		filepath.Join(cwd, path),
+		filepath.Join(cwd, "parallax_backend", path),
+	}
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		candidates = append(candidates, filepath.Join(dir, path), filepath.Join(dir, "..", path))
+	}
+	for _, cand := range candidates {
+		abs, err := filepath.Abs(cand)
+		if err != nil {
+			continue
+		}
+		if _, err := os.Stat(abs); err == nil {
+			return abs
+		}
+	}
+	abs, err := filepath.Abs(filepath.Join(cwd, path))
+	if err != nil {
+		return path
+	}
+	return abs
 }
 
 func envOr(key, fallback string) string {

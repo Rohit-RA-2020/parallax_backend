@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"parallax/internal/llm"
 	"parallax/internal/projects"
 	"parallax/internal/tools"
+	"parallax/internal/transcript"
 )
 
 // ProviderFactory builds a ChatProvider from the current LLM settings.
@@ -33,6 +35,26 @@ type Server struct {
 	MaxIters     int
 	Logger       *slog.Logger
 	Workspace    string
+	Indexer      *transcript.Indexer
+}
+
+func (s *Server) indexMedia(projectID, rel string) {
+	if s == nil || s.Indexer == nil || !s.Indexer.Enabled() {
+		return
+	}
+	rel = strings.TrimSpace(rel)
+	if rel == "" || !transcript.HasSpeech(rel) {
+		return
+	}
+	s.Indexer.Mark(projectID, rel, transcript.StateQueued, "")
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+		defer cancel()
+		if err := s.Indexer.Index(ctx, projectID, rel); err != nil {
+			s.Indexer.Mark(projectID, rel, transcript.StateFailed, err.Error())
+			s.log().Error("index media", "project", projectID, "path", rel, "err", err)
+		}
+	}()
 }
 
 func (s *Server) systemPrompt() string {
@@ -177,7 +199,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			writeProjectError(w, err)
 			return
 		}
-		tools.RegisterMedia(toolRegistry, tools.MediaEnv{Workspace: project.Dir, Bins: s.Bins, OnMutation: timelineTx.MarkMediaMutation})
+		tools.RegisterMedia(toolRegistry, tools.MediaEnv{
+			Workspace:  project.Dir,
+			Bins:       s.Bins,
+			OnMutation: timelineTx.MarkMediaMutation,
+			OnApplied:  func(rel string) { s.indexMedia(projectID, rel) },
+		})
 		tools.RegisterWeb(toolRegistry, tools.WebEnv{APIKey: s.ExaAPIKey, BaseURL: s.ExaBaseURL})
 		tools.RegisterTimeline(toolRegistry, tools.TimelineEnv{
 			Transaction: timelineTx,
@@ -186,6 +213,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			Workspace:   project.Dir,
 			Bins:        s.Bins,
 		})
+		tools.RegisterTranscript(toolRegistry, tools.TranscriptEnv{Indexer: s.Indexer, ProjectID: projectID})
 	}
 	if toolRegistry == nil {
 		writeError(w, http.StatusInternalServerError, "media tools are not configured")

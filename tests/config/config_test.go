@@ -8,6 +8,18 @@ import (
 	. "parallax/internal/config"
 )
 
+func TestValidateEmbedding(t *testing.T) {
+	if err := ValidateEmbedding(Embedding{}); err == nil {
+		t.Fatal("expected error")
+	}
+	if err := ValidateEmbedding(Embedding{BaseURL: "ftp://x", APIKey: "k", Model: "m"}); err == nil {
+		t.Fatal("expected scheme error")
+	}
+	if err := ValidateEmbedding(Embedding{BaseURL: "https://api.openai.com/v1", APIKey: "k", Model: "text-embedding-3-small"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestValidateLLM(t *testing.T) {
 	if err := ValidateLLM(LLM{}); err == nil {
 		t.Fatal("expected error")
@@ -75,6 +87,70 @@ func TestGetByID(t *testing.T) {
 	}
 	if _, err := s.GetByID("missing"); err == nil {
 		t.Fatal("expected unknown id error")
+	}
+}
+
+func TestResolveWhisperPathsFromRepoRoot(t *testing.T) {
+	root := t.TempDir()
+	backend := filepath.Join(root, "parallax_backend")
+	python := filepath.Join(backend, "scripts", ".venv", "bin", "python")
+	script := filepath.Join(backend, "scripts", "transcribe.py")
+	if err := os.MkdirAll(filepath.Dir(python), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(python, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(script, []byte("#"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PARALLAX_WORKSPACE", filepath.Join(root, "ws"))
+	t.Setenv("PARALLAX_DATA", filepath.Join(root, "data"))
+	t.Setenv("WHISPER_PYTHON", "./scripts/.venv/bin/python")
+	t.Setenv("WHISPER_SCRIPT", "./scripts/transcribe.py")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WhisperPython != python {
+		t.Fatalf("python=%s want %s", cfg.WhisperPython, python)
+	}
+	if cfg.WhisperScript != script {
+		t.Fatalf("script=%s want %s", cfg.WhisperScript, script)
+	}
+}
+
+func TestLoadEmbeddingQdrantAndWhisper(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PARALLAX_WORKSPACE", filepath.Join(dir, "ws"))
+	t.Setenv("PARALLAX_DATA", filepath.Join(dir, "data"))
+	t.Setenv("EMBEDDING_BASE_URL", "https://api.openai.com/v1")
+	t.Setenv("EMBEDDING_API_KEY", "sk-emb")
+	t.Setenv("EMBEDDING_MODEL", "text-embedding-3-small")
+	t.Setenv("QDRANT_URL", "http://127.0.0.1:6333")
+	t.Setenv("WHISPER_MODEL", "/models/ggml-large-v3-turbo-q8_0.bin")
+	t.Setenv("WHISPER_DEVICE", "cpu")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Embedding.Model != "text-embedding-3-small" || cfg.Embedding.APIKey != "sk-emb" {
+		t.Fatalf("embed=%+v", cfg.Embedding)
+	}
+	if cfg.QdrantURL != "http://127.0.0.1:6333" {
+		t.Fatalf("qdrant=%s", cfg.QdrantURL)
+	}
+	if cfg.WhisperModel != "/models/ggml-large-v3-turbo-q8_0.bin" || cfg.WhisperDevice != "cpu" {
+		t.Fatalf("whisper=%s %s", cfg.WhisperModel, cfg.WhisperDevice)
 	}
 }
 

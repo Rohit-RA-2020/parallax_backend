@@ -16,6 +16,7 @@ import (
 
 	"parallax/internal/ffmpeg"
 	"parallax/internal/projects"
+	"parallax/internal/transcript"
 )
 
 const maxUploadBytes = 2 << 30
@@ -31,7 +32,8 @@ type projectResponse struct {
 
 type mediaResponse struct {
 	projects.Media
-	ContentURL string `json:"content_url"`
+	ContentURL string                `json:"content_url"`
+	Transcript *transcript.JobStatus `json:"transcript,omitempty"`
 }
 
 func (s *Server) handleListProjects(w http.ResponseWriter, _ *http.Request) {
@@ -72,7 +74,7 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 	s.attachDurations(p.ID, media)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project": projectResponse{Project: p, MediaCount: len(media)},
-		"media":   mediaResponses(p.ID, media),
+		"media":   s.mediaResponses(p.ID, media),
 	})
 }
 
@@ -84,7 +86,7 @@ func (s *Server) handleListMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.attachDurations(id, media)
-	writeJSON(w, http.StatusOK, map[string]any{"media": mediaResponses(id, media)})
+	writeJSON(w, http.StatusOK, map[string]any{"media": s.mediaResponses(id, media)})
 }
 
 func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
@@ -135,7 +137,10 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.attachDurations(id, uploaded)
-	writeJSON(w, http.StatusCreated, map[string]any{"media": mediaResponses(id, uploaded)})
+	for _, media := range uploaded {
+		s.indexMedia(id, media.Path)
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"media": s.mediaResponses(id, uploaded)})
 }
 
 func (s *Server) handleProjectFile(w http.ResponseWriter, r *http.Request) {
@@ -205,6 +210,9 @@ func (s *Server) handleDeleteProjectFile(w http.ResponseWriter, r *http.Request)
 		_, _ = s.Projects.RestoreRevision(id, history.Head, -1)
 		writeProjectError(w, err)
 		return
+	}
+	if s.Indexer != nil {
+		_ = s.Indexer.RemovePath(r.Context(), id, removedPath)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -343,14 +351,23 @@ func projectFileURL(projectID, path string) string {
 	return "/v1/projects/" + url.PathEscape(projectID) + "/files/" + strings.Join(parts, "/")
 }
 
-func mediaResponses(projectID string, media []projects.Media) []mediaResponse {
+func (s *Server) mediaResponses(projectID string, media []projects.Media) []mediaResponse {
+	var statuses map[string]transcript.JobStatus
+	if s != nil && s.Indexer != nil {
+		statuses = s.Indexer.Statuses(projectID)
+	}
 	out := make([]mediaResponse, 0, len(media))
 	for _, item := range media {
 		u := projectFileURL(projectID, item.Path)
 		if !item.ModifiedAt.IsZero() {
 			u += "?t=" + url.QueryEscape(fmt.Sprintf("%d-%d", item.ModifiedAt.UnixMilli(), item.Bytes))
 		}
-		out = append(out, mediaResponse{Media: item, ContentURL: u})
+		itemOut := mediaResponse{Media: item, ContentURL: u}
+		if st, ok := statuses[item.Path]; ok {
+			copy := st
+			itemOut.Transcript = &copy
+		}
+		out = append(out, itemOut)
 	}
 	return out
 }

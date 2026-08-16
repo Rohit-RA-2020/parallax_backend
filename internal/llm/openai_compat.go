@@ -140,6 +140,82 @@ func (c *CompatClient) Stream(ctx context.Context, req Request) (<-chan Delta, e
 	return out, nil
 }
 
+type wireCompletion struct {
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// Complete performs a non-streaming chat completion and returns assistant text.
+func (c *CompatClient) Complete(ctx context.Context, req Request) (string, error) {
+	if strings.TrimSpace(c.Model) == "" {
+		return "", fmt.Errorf("llm: model is not configured")
+	}
+	if strings.TrimSpace(c.APIKey) == "" {
+		return "", fmt.Errorf("llm: api key is not configured")
+	}
+	url := CompletionsURL(c.BaseURL)
+	if url == "" {
+		return "", fmt.Errorf("llm: base_url is not configured")
+	}
+
+	body, err := json.Marshal(wireRequest{
+		Model:           c.Model,
+		Messages:        sanitizeMessages(req.Messages),
+		Temperature:     req.Temperature,
+		ReasoningEffort: req.ReasoningEffort,
+		Stream:          false,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+	for k, v := range c.ExtraHeaders {
+		if v != "" {
+			httpReq.Header.Set(k, v)
+		}
+	}
+
+	client := c.HTTPClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("llm request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return "", readAPIError(resp)
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return "", fmt.Errorf("llm: read completion: %w", err)
+	}
+	var parsed wireCompletion
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return "", fmt.Errorf("llm: decode completion: %w", err)
+	}
+	if parsed.Error != nil && parsed.Error.Message != "" {
+		return "", fmt.Errorf("llm: %s", parsed.Error.Message)
+	}
+	if len(parsed.Choices) == 0 {
+		return "", fmt.Errorf("llm: empty completion")
+	}
+	return parsed.Choices[0].Message.Content, nil
+}
+
 // sanitizeMessages repairs streamed OpenAI-compatible argument glitches:
 // a complete object may be emitted more than once (`{}{}`) or two objects may
 // be concatenated (`{"path":"a.mp4"}{}`). Stored sessions can retain that

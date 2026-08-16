@@ -19,6 +19,7 @@ import (
 	"parallax/internal/llm"
 	"parallax/internal/projects"
 	"parallax/internal/tools"
+	"parallax/internal/transcript"
 )
 
 type fakeProvider struct {
@@ -87,6 +88,62 @@ func testServer(t *testing.T, p llm.ChatProvider) *Server {
 		MaxIters:  4,
 		Workspace: dir,
 		NewLLM:    func(config.LLM) llm.ChatProvider { return p },
+	}
+}
+
+func TestListMediaIncludesTranscriptStatus(t *testing.T) {
+	s := testServer(t, fakeProvider{})
+	s.Indexer = &transcript.Indexer{Projects: s.Projects}
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/projects", "application/json", strings.NewReader(`{"name":"Demo"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	part, err := mw.CreateFormFile("files", "talk.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write([]byte("video-bytes"))
+	_ = mw.Close()
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/projects/"+created.ID+"/media", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	s.Indexer.Mark(created.ID, "media/talk.mp4", transcript.StateTranscribing, "")
+
+	resp, err = http.Get(ts.URL + "/v1/projects/" + created.ID + "/media")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var listed struct {
+		Media []struct {
+			Path       string `json:"path"`
+			Transcript *struct {
+				State string `json:"state"`
+			} `json:"transcript"`
+		} `json:"media"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Media) != 1 || listed.Media[0].Transcript == nil || listed.Media[0].Transcript.State != transcript.StateTranscribing {
+		t.Fatalf("listed=%+v", listed)
 	}
 }
 

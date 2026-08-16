@@ -20,6 +20,7 @@ Agent loop  (no framework)
     ├── list_workspace / inspect_file / probe_media
     └── run_ffmpeg  →  argv parse → sandbox validate → exec.Command (no shell)
     └── search_web   →  Exa Search API (links + highlights/full page text)
+    └── search_transcript / get_transcript  →  Whisper + English index in Qdrant
     │
     ▼
 Any OpenAI-compatible /v1/chat/completions
@@ -80,6 +81,34 @@ Gemini thinking-model tool calls include
 `extra_content.google.thought_signature`. Parallax preserves that field and
 returns it unchanged during sequential and parallel tool-calling steps, as
 required by Gemini's OpenAI-compatible API.
+
+## Transcripts and search
+
+On upload, files with audio are transcribed by a Python sidecar running
+**faster-whisper** (`large-v3-turbo`, CUDA int8 when a GPU is available).
+Word-level original language is stored at `.parallax/transcripts/<sha256>.json`.
+
+Non-English segments are translated to English by the **active chat LLM**.
+English segment text (plus neighboring segments) is embedded through a
+**separate** OpenAI-compatible embeddings endpoint and upserted into **local
+Qdrant**, one collection per project. Director must query in English and may
+filter by file path.
+
+```bash
+# from parallax_backend/
+./scripts/setup-whisper.sh
+
+WHISPER_PYTHON=./scripts/.venv/bin/python
+WHISPER_MODEL=large-v3-turbo
+WHISPER_DEVICE=auto
+WHISPER_COMPUTE=int8
+
+EMBEDDING_BASE_URL=https://api.openai.com/v1
+EMBEDDING_API_KEY=sk-…
+EMBEDDING_MODEL=text-embedding-3-small
+
+QDRANT_URL=http://127.0.0.1:6333
+```
 
 ## Run
 
@@ -167,6 +196,8 @@ project fps, source in-points, and media paths (not playback URLs).
 | `restore_project_revision` | Restore a selected revision |
 | `create_project_checkpoint` | Name the state committed by the current request |
 | `search_web` | Search the web through Exa for links, metadata, and page content |
+| `search_transcript` | English semantic search over this project's speech (optional path filter) |
+| `get_transcript` | Read the timed original + English transcript for one file |
 
 ## Tests
 

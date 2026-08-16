@@ -117,7 +117,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.Projects.Touch(id)
 
-	item := mediaResponses(id, []projects.Media{media})[0]
+	item := s.mediaResponses(id, []projects.Media{media})[0]
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"media":        item,
 		"download_url": item.ContentURL + downloadQuery(item.ContentURL),

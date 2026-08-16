@@ -292,6 +292,40 @@ func TestCompatClientStreamsGeminiThoughtSignature(t *testing.T) {
 	}
 }
 
+func TestCompatClientComplete(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		var body struct {
+			Stream bool   `json:"stream"`
+			Model  string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Stream || body.Model != "grok-4.6" {
+			t.Fatalf("body=%+v", body)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"content": `["Thanks"]`}}},
+		})
+	}))
+	defer srv.Close()
+
+	c := NewCompatClient(srv.URL+"/v1", "test-key", "grok-4.6")
+	c.HTTPClient = srv.Client()
+	got, err := c.Complete(context.Background(), Request{
+		Messages: []Message{{Role: RoleUser, Content: "translate"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != `["Thanks"]` {
+		t.Fatalf("got=%q", got)
+	}
+}
+
 func TestCompatClientStream(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {

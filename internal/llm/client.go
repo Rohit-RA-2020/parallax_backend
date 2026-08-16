@@ -11,6 +11,12 @@ type ChatProvider interface {
 	Stream(ctx context.Context, req Request) (<-chan Delta, error)
 }
 
+// Completer is a non-streaming chat call. Used for ingest-time work such as
+// translating transcript segments — not for the Director loop.
+type Completer interface {
+	Complete(ctx context.Context, req Request) (string, error)
+}
+
 // CompletionsURL joins a configured base URL with /chat/completions.
 // Accepts "https://host/v1", "https://host/v1/", or a full completions URL.
 func CompletionsURL(base string) string {

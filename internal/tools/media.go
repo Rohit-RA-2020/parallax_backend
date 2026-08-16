@@ -21,6 +21,7 @@ type MediaEnv struct {
 	Bins       ffmpeg.Bins
 	AllowNet   bool
 	OnMutation func()
+	OnApplied  func(rel string)
 }
 
 const defaultFFmpegTimeout = 5 * time.Minute
@@ -344,11 +345,17 @@ func (e MediaEnv) runFFmpeg(ctx context.Context, raw json.RawMessage) Result {
 		if e.OnMutation != nil {
 			e.OnMutation()
 		}
+		if e.OnApplied != nil {
+			e.OnApplied(applyTo)
+		}
 	} else if io := ffmpeg.ParseMediaIO(args); len(io.Outputs) > 0 {
 		out["output"] = io.Outputs[0]
 		out["in_place"] = false
 		if e.OnMutation != nil {
 			e.OnMutation()
+		}
+		if e.OnApplied != nil {
+			e.OnApplied(io.Outputs[0])
 		}
 	}
 	return Result{OK: true, Output: out}

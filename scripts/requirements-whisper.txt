@@ -1,0 +1,4 @@
+faster-whisper>=1.1.0
+nvidia-cublas-cu12
+nvidia-cuda-runtime-cu12
+nvidia-cudnn-cu12
