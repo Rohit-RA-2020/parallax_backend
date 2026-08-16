@@ -78,6 +78,125 @@ func TestAssembleToolCallsDeduplicatesRepeatedCompleteArguments(t *testing.T) {
 	}
 }
 
+func TestAssembleToolCallsSplitsParallelCallsThatReuseIndex(t *testing.T) {
+	got := AssembleToolCalls([]ToolCallDelta{
+		{Index: 0, ID: "call_1", Type: "function", Function: struct {
+			Name      string `json:"name,omitempty"`
+			Arguments string `json:"arguments,omitempty"`
+		}{Name: "probe_media", Arguments: `{"path":"media/sample-5s.mp4"}`}},
+		{Index: 0, ID: "call_2", Type: "function", Function: struct {
+			Name      string `json:"name,omitempty"`
+			Arguments string `json:"arguments,omitempty"`
+		}{Name: "get_timeline", Arguments: `{}`}},
+	})
+	if len(got) != 2 {
+		t.Fatalf("len=%d got=%+v", len(got), got)
+	}
+	if got[0].Function.Name != "probe_media" || got[0].Function.Arguments != `{"path":"media/sample-5s.mp4"}` {
+		t.Fatalf("first=%+v", got[0])
+	}
+	if got[1].Function.Name != "get_timeline" || got[1].Function.Arguments != `{}` {
+		t.Fatalf("second=%+v", got[1])
+	}
+}
+
+func TestAssembleToolCallsMergesConcatenatedGetTimelineArguments(t *testing.T) {
+	// Exact Director failure: Gemini reused index 0 and appended {} after a
+	// probe-shaped object, producing invalid JSON for get_timeline.
+	got := AssembleToolCalls([]ToolCallDelta{
+		{Index: 0, ID: "call_1793426", Type: "function", Function: struct {
+			Name      string `json:"name,omitempty"`
+			Arguments string `json:"arguments,omitempty"`
+		}{Name: "get_timeline", Arguments: `{"path":"media/sample-5s.mp4"}`}},
+		{Index: 0, Function: struct {
+			Name      string `json:"name,omitempty"`
+			Arguments string `json:"arguments,omitempty"`
+		}{Arguments: `{}`}},
+	})
+	if len(got) != 1 {
+		t.Fatalf("len=%d got=%+v", len(got), got)
+	}
+	if !json.Valid([]byte(got[0].Function.Arguments)) {
+		t.Fatalf("arguments are not valid JSON: %s", got[0].Function.Arguments)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(got[0].Function.Arguments), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["path"] != "media/sample-5s.mp4" {
+		t.Fatalf("arguments=%s", got[0].Function.Arguments)
+	}
+}
+
+func TestAssembleToolCallsRepairsSingleChunkConcatenatedArguments(t *testing.T) {
+	got := AssembleToolCalls([]ToolCallDelta{{
+		Index: 0,
+		ID:    "call_1793426",
+		Type:  "function",
+		Function: struct {
+			Name      string `json:"name,omitempty"`
+			Arguments string `json:"arguments,omitempty"`
+		}{Name: "get_timeline", Arguments: `{"path":"media/sample-5s.mp4"}{}`},
+	}})
+	if len(got) != 1 {
+		t.Fatalf("len=%d", len(got))
+	}
+	if !json.Valid([]byte(got[0].Function.Arguments)) {
+		t.Fatalf("arguments are not valid JSON: %s", got[0].Function.Arguments)
+	}
+	if got[0].Function.Name != "get_timeline" {
+		t.Fatalf("name=%s", got[0].Function.Name)
+	}
+}
+
+func TestCompatClientSanitizesConcatenatedArgumentsFromStoredSession(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Messages []Message `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		got := request.Messages[0].ToolCalls[0].Function.Arguments
+		if !json.Valid([]byte(got)) {
+			t.Errorf("arguments=%q", got)
+		}
+		var body map[string]any
+		if err := json.Unmarshal([]byte(got), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body["path"] != "media/sample-5s.mp4" {
+			t.Errorf("arguments=%q", got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	c := NewCompatClient(srv.URL+"/v1", "test-key", "gemini-test")
+	c.HTTPClient = srv.Client()
+	stream, err := c.Stream(context.Background(), Request{
+		Messages: []Message{
+			{
+				Role: RoleAssistant,
+				ToolCalls: []ToolCall{
+					{ID: "call_1793426", Type: "function", Function: FunctionCall{
+						Name: "get_timeline", Arguments: `{"path":"media/sample-5s.mp4"}{}`,
+					}},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for delta := range stream {
+		if delta.Err != nil {
+			t.Fatal(delta.Err)
+		}
+	}
+}
+
 func TestCompatClientSanitizesRepeatedArgumentsFromStoredSession(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {

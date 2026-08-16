@@ -140,10 +140,10 @@ func (c *CompatClient) Stream(ctx context.Context, req Request) (<-chan Delta, e
 	return out, nil
 }
 
-// sanitizeMessages repairs a narrow compatibility issue seen in some streamed
-// OpenAI-compatible providers: a complete tool argument object can be emitted
-// more than once, producing strings such as `{}{} `. Stored sessions may retain
-// that malformed value, so normalize again immediately before sending a request.
+// sanitizeMessages repairs streamed OpenAI-compatible argument glitches:
+// a complete object may be emitted more than once (`{}{}`) or two objects may
+// be concatenated (`{"path":"a.mp4"}{}`). Stored sessions can retain that
+// value, so normalize again immediately before sending a request.
 func sanitizeMessages(messages []Message) []Message {
 	out := make([]Message, len(messages))
 	copy(out, messages)
@@ -169,32 +169,81 @@ func normalizeToolArguments(arguments string) string {
 	}
 
 	decoder := json.NewDecoder(strings.NewReader(trimmed))
-	var first []byte
-	count := 0
+	var values []json.RawMessage
 	for {
 		var raw json.RawMessage
-		err := decoder.Decode(&raw)
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
+		if err := decoder.Decode(&raw); err != nil {
+			if err == io.EOF {
+				break
+			}
 			return arguments
 		}
 		var compact bytes.Buffer
 		if err := json.Compact(&compact, raw); err != nil {
 			return arguments
 		}
-		if count == 0 {
-			first = append(first, compact.Bytes()...)
-		} else if !bytes.Equal(first, compact.Bytes()) {
-			return arguments
+		values = append(values, append(json.RawMessage(nil), compact.Bytes()...))
+	}
+	if len(values) == 0 {
+		return arguments
+	}
+	if len(values) == 1 {
+		return string(values[0])
+	}
+
+	allSame := true
+	for i := 1; i < len(values); i++ {
+		if !bytes.Equal(values[0], values[i]) {
+			allSame = false
+			break
 		}
-		count++
 	}
-	if count > 1 {
-		return string(first)
+	if allSame {
+		return string(values[0])
 	}
-	return arguments
+
+	// Gemini/OpenAI-compat streams sometimes emit two complete objects for one
+	// call, e.g. {"path":"media/talk.mp4"}{}. Keep one valid object so the
+	// registry can execute instead of failing json.Valid.
+	if merged, ok := mergeJSONObjects(values); ok {
+		return merged
+	}
+	return string(values[len(values)-1])
+}
+
+func mergeJSONObjects(values []json.RawMessage) (string, bool) {
+	merged := map[string]any{}
+	for _, raw := range values {
+		trimmed := bytes.TrimSpace(raw)
+		if len(trimmed) == 0 || trimmed[0] != '{' {
+			return "", false
+		}
+		var obj map[string]any
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			return "", false
+		}
+		for key, value := range obj {
+			merged[key] = value
+		}
+	}
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return "", false
+	}
+	return string(out), true
+}
+
+func completeJSON(s string) bool {
+	s = strings.TrimSpace(s)
+	return s != "" && json.Valid([]byte(s))
+}
+
+func compactJSON(s string) ([]byte, bool) {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, []byte(strings.TrimSpace(s))); err != nil {
+		return nil, false
+	}
+	return buf.Bytes(), true
 }
 
 func readAPIError(resp *http.Response) error {
@@ -297,42 +346,71 @@ func truncate(s string, n int) string {
 	return s[:n] + "…"
 }
 
-// AssembleToolCalls folds streaming tool-call deltas into complete ToolCalls.
-// Handles both incremental OpenAI-style chunks and single-shot xAI-style chunks.
-func AssembleToolCalls(deltas []ToolCallDelta) []ToolCall {
-	type acc struct {
-		id, typ, name, args string
-		extra               json.RawMessage
+type toolCallAcc struct {
+	id, typ, name, args string
+	extra               json.RawMessage
+}
+
+func (a *toolCallAcc) applyMeta(d ToolCallDelta) {
+	if d.ID != "" {
+		a.id = d.ID
 	}
-	byIdx := map[int]*acc{}
-	var order []int
+	if d.Type != "" {
+		a.typ = d.Type
+	}
+	if len(d.ExtraContent) > 0 {
+		a.extra = append(a.extra[:0], d.ExtraContent...)
+	}
+}
+
+// AssembleToolCalls folds streaming tool-call deltas into complete ToolCalls.
+// Handles incremental OpenAI-style chunks, single-shot xAI-style chunks, and
+// Gemini OpenAI-compat collisions where parallel calls reuse index 0.
+func AssembleToolCalls(deltas []ToolCallDelta) []ToolCall {
+	byIdx := map[int]*toolCallAcc{}
+	var accs []*toolCallAcc
+	start := func(index int) *toolCallAcc {
+		a := &toolCallAcc{typ: "function"}
+		byIdx[index] = a
+		accs = append(accs, a)
+		return a
+	}
+
 	for _, d := range deltas {
 		a, ok := byIdx[d.Index]
 		if !ok {
-			a = &acc{typ: "function"}
-			byIdx[d.Index] = a
-			order = append(order, d.Index)
+			a = start(d.Index)
+		} else if toolCallBoundary(a.id, a.name, d) {
+			a = start(d.Index)
+		} else if d.Function.Arguments != "" && completeJSON(a.args) && completeJSON(d.Function.Arguments) {
+			// Same call emitted two complete objects. Dedup or merge; do not
+			// concatenate into {"path":"..."}{} which json.Valid rejects.
+			if left, okLeft := compactJSON(a.args); okLeft {
+				if right, okRight := compactJSON(d.Function.Arguments); okRight && bytes.Equal(left, right) {
+					a.applyMeta(d)
+					continue
+				}
+			}
+			a.args = normalizeToolArguments(a.args + d.Function.Arguments)
+			a.applyMeta(d)
+			if d.Function.Name != "" {
+				a.name = d.Function.Name
+			}
+			continue
 		}
-		if d.ID != "" {
-			a.id = d.ID
-		}
-		if d.Type != "" {
-			a.typ = d.Type
-		}
+
+		a.applyMeta(d)
 		if d.Function.Name != "" {
 			a.name = d.Function.Name
 		}
 		if d.Function.Arguments != "" {
 			a.args += d.Function.Arguments
 		}
-		if len(d.ExtraContent) > 0 {
-			a.extra = append(a.extra[:0], d.ExtraContent...)
-		}
 	}
-	out := make([]ToolCall, 0, len(order))
-	for _, idx := range order {
-		a := byIdx[idx]
-		if a.name == "" && a.args == "" {
+
+	out := make([]ToolCall, 0, len(accs))
+	for _, a := range accs {
+		if a.name == "" {
 			continue
 		}
 		out = append(out, ToolCall{
@@ -346,4 +424,11 @@ func AssembleToolCalls(deltas []ToolCallDelta) []ToolCall {
 		})
 	}
 	return out
+}
+
+func toolCallBoundary(id, name string, d ToolCallDelta) bool {
+	if d.ID != "" && id != "" && d.ID != id {
+		return true
+	}
+	return d.Function.Name != "" && name != "" && d.Function.Name != name
 }

@@ -21,6 +21,8 @@ type TimelineOperation struct {
 	SourceInFrame  *int                `json:"source_in_frame,omitempty"`
 	Track          string              `json:"track,omitempty"`
 	Frame          int                 `json:"frame,omitempty"`
+	Path           string              `json:"path,omitempty"`
+	At             string              `json:"at,omitempty"`
 }
 
 type OperationResult struct {
@@ -264,6 +266,22 @@ func (tx *TimelineTransaction) Get() Timeline {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 	return tx.doc
+}
+
+// Focus moves the playhead and selection so the preview shows a just-placed clip.
+func (tx *TimelineTransaction) Focus(id string, frame int) {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+	if tx.closed {
+		return
+	}
+	if frame >= 0 {
+		tx.doc.PlayheadFrame = frame
+	}
+	if strings.TrimSpace(id) != "" {
+		tx.doc.SelectedID = id
+	}
+	tx.dirty = true
 }
 
 func (tx *TimelineTransaction) Apply(operations []TimelineOperation) (OperationResult, error) {

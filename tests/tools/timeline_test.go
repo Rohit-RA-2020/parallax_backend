@@ -1,6 +1,10 @@
 package tools_test
 
 import (
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"parallax/internal/projects"
@@ -37,6 +41,140 @@ func TestTimelineToolStagesThenCommitsOneRevision(t *testing.T) {
 	}
 	if after.Revision != 1 || len(after.Clips) != 1 || after.Clips[0].Title.Text != "Welcome" {
 		t.Fatalf("timeline=%+v", after)
+	}
+}
+
+func TestPlaceMediaPutsLinkedAudioAndFocusesPreview(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skip("ffprobe not installed")
+	}
+	store, err := projects.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := store.Create("Place")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaDir := filepath.Join(project.Dir, "media")
+	if err := os.MkdirAll(mediaDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(mediaDir, "talk.mp4")
+	cmd := exec.Command("ffmpeg", "-y",
+		"-f", "lavfi", "-i", "color=c=black:s=32x32:d=1",
+		"-f", "lavfi", "-i", "sine=f=440:d=1",
+		"-shortest", "-pix_fmt", "yuv420p", out)
+	if data, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg: %v\n%s", err, data)
+	}
+	tx, err := store.BeginTimelineTransaction(project.ID, projects.CommitMeta{Actor: "agent", Summary: "Place media"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := tools.NewRegistry()
+	tools.RegisterTimeline(registry, tools.TimelineEnv{
+		Transaction: tx,
+		Store:       store,
+		ProjectID:   project.ID,
+		Workspace:   project.Dir,
+	})
+	result := registry.Execute(t.Context(), "place_media", `{"path":"media/talk.mp4"}`)
+	if !result.OK {
+		t.Fatalf("place_media: %s", result.Error)
+	}
+	doc, changed, err := tx.Commit()
+	if err != nil || !changed {
+		t.Fatalf("commit changed=%v err=%v", changed, err)
+	}
+	if len(doc.Clips) != 2 {
+		t.Fatalf("clips=%d %+v", len(doc.Clips), doc.Clips)
+	}
+	var video, audio *projects.TimelineClip
+	for i := range doc.Clips {
+		switch doc.Clips[i].Track {
+		case "V1":
+			video = &doc.Clips[i]
+		case "A1":
+			audio = &doc.Clips[i]
+		}
+	}
+	if video == nil || audio == nil || video.LinkID == "" || video.LinkID != audio.LinkID {
+		t.Fatalf("video=%+v audio=%+v", video, audio)
+	}
+	if video.DurationFrames < 20 || audio.MediaPath != "media/talk.mp4" {
+		t.Fatalf("duration=%d path=%s", video.DurationFrames, audio.MediaPath)
+	}
+	if doc.PlayheadFrame != video.StartFrame || doc.SelectedID != video.ID {
+		t.Fatalf("preview focus playhead=%d selected=%s", doc.PlayheadFrame, doc.SelectedID)
+	}
+}
+
+func TestAddItemVideoExpandsLinkedAudio(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skip("ffprobe not installed")
+	}
+	store, err := projects.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := store.Create("Expand")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaDir := filepath.Join(project.Dir, "media")
+	if err := os.MkdirAll(mediaDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(mediaDir, "talk.mp4")
+	cmd := exec.Command("ffmpeg", "-y",
+		"-f", "lavfi", "-i", "color=c=black:s=32x32:d=1",
+		"-f", "lavfi", "-i", "sine=f=440:d=1",
+		"-shortest", "-pix_fmt", "yuv420p", out)
+	if data, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg: %v\n%s", err, data)
+	}
+	tx, err := store.BeginTimelineTransaction(project.ID, projects.CommitMeta{Actor: "agent", Summary: "Add item"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := tools.NewRegistry()
+	tools.RegisterTimeline(registry, tools.TimelineEnv{
+		Transaction: tx,
+		Workspace:   project.Dir,
+	})
+	payload, _ := json.Marshal(map[string]any{
+		"operations": []map[string]any{{
+			"type": "add_item",
+			"item": map[string]any{
+				"name":            "talk",
+				"track":           "V1",
+				"kind":            "video",
+				"start_frame":     0,
+				"duration_frames": 1,
+				"media_path":      "media/talk.mp4",
+			},
+		}},
+	})
+	result := registry.Execute(t.Context(), "edit_timeline", string(payload))
+	if !result.OK {
+		t.Fatalf("edit_timeline: %s", result.Error)
+	}
+	doc, _, err := tx.Commit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Clips) != 2 {
+		t.Fatalf("clips=%d %+v", len(doc.Clips), doc.Clips)
+	}
+	if doc.Clips[0].DurationFrames < 20 {
+		t.Fatalf("duration not repaired from probe: %d", doc.Clips[0].DurationFrames)
 	}
 }
 

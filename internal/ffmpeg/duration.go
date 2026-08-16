@@ -8,11 +8,13 @@ import (
 	"time"
 )
 
-// MediaProbe is duration plus coded frame size from ffprobe.
+// MediaProbe is duration, coded frame size, and which streams exist.
 type MediaProbe struct {
 	Duration float64
 	Width    int
 	Height   int
+	HasVideo bool
+	HasAudio bool
 }
 
 // ProbeDuration returns the container duration in seconds for a workspace file.
@@ -65,15 +67,16 @@ func ParseMediaProbe(raw string) (MediaProbe, error) {
 		}
 	}
 	for _, stream := range payload.Streams {
-		if stream.Width < 1 || stream.Height < 1 {
-			continue
+		switch strings.ToLower(stream.CodecType) {
+		case "audio":
+			out.HasAudio = true
+		case "video":
+			out.HasVideo = true
+			if out.Width < 1 && stream.Width > 0 && stream.Height > 0 {
+				out.Width = stream.Width
+				out.Height = stream.Height
+			}
 		}
-		if stream.CodecType == "audio" {
-			continue
-		}
-		out.Width = stream.Width
-		out.Height = stream.Height
-		break
 	}
 	return out, nil
 }

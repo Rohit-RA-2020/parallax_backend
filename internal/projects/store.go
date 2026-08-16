@@ -392,6 +392,10 @@ func contentType(ext string) string {
 	return "application/octet-stream"
 }
 
+func KindForExt(ext string) string {
+	return kindForExt(ext)
+}
+
 func kindForExt(ext string) string {
 	switch ext {
 	case ".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".ts", ".mts":

@@ -20,6 +20,9 @@ func TestParseMediaProbeVideo(t *testing.T) {
 	if got.Duration < 30.5 || got.Duration > 30.6 {
 		t.Fatalf("duration=%v", got.Duration)
 	}
+	if !got.HasVideo || got.HasAudio {
+		t.Fatalf("streams video=%v audio=%v", got.HasVideo, got.HasAudio)
+	}
 }
 
 func TestParseMediaProbeSkipsAudioStream(t *testing.T) {
@@ -35,5 +38,8 @@ func TestParseMediaProbeSkipsAudioStream(t *testing.T) {
 	}
 	if got.Width != 1920 || got.Height != 1080 {
 		t.Fatalf("frame=%dx%d", got.Width, got.Height)
+	}
+	if !got.HasVideo || !got.HasAudio {
+		t.Fatalf("streams video=%v audio=%v", got.HasVideo, got.HasAudio)
 	}
 }

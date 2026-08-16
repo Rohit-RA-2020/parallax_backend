@@ -153,6 +153,7 @@ project fps, source in-points, and media paths (not playback URLs).
 | `probe_media`    | `ffprobe` JSON |
 | `run_ffmpeg`     | One validated ffmpeg/ffprobe command |
 | `get_timeline` | Inspect stable timeline IDs and editable properties |
+| `place_media` | Put a file on the timeline (V1 picture + linked A1 audio) |
 | `edit_timeline` | Stage validated effects, keyframes, cuts, and transitions |
 | `get_project_history` | Inspect revisions, alternate futures, and checkpoints |
 | `undo_project_change` / `redo_project_change` | Stage persistent history navigation |

@@ -140,6 +140,49 @@ func TestTimelineRejectsInvalid(t *testing.T) {
 	}
 }
 
+func TestPlaceMediaClipsSplitsLinkedAudio(t *testing.T) {
+	clips := PlaceMediaClips(MediaLayout{
+		Path:                 "media/sample-5s.mp4",
+		StartFrame:           0,
+		DurationFrames:       138,
+		SourceDurationFrames: 138,
+		HasPicture:           true,
+		HasAudio:             true,
+	})
+	if len(clips) != 2 {
+		t.Fatalf("clips=%d", len(clips))
+	}
+	if clips[0].Track != "V1" || clips[0].Kind != "video" || clips[0].MediaPath != "media/sample-5s.mp4" {
+		t.Fatalf("video=%+v", clips[0])
+	}
+	if clips[1].Track != "A1" || clips[1].Kind != "audio" || clips[1].LinkID == "" || clips[1].LinkID != clips[0].LinkID {
+		t.Fatalf("audio=%+v", clips[1])
+	}
+	if clips[0].DurationFrames != 138 || clips[1].DurationFrames != 138 {
+		t.Fatalf("duration video=%d audio=%d", clips[0].DurationFrames, clips[1].DurationFrames)
+	}
+}
+
+func TestPlaceMediaClipsAudioOnly(t *testing.T) {
+	clips := PlaceMediaClips(MediaLayout{
+		Path:           "media/score.wav",
+		DurationFrames: 48,
+		HasAudio:       true,
+	})
+	if len(clips) != 1 || clips[0].Track != "A1" || clips[0].Kind != "audio" {
+		t.Fatalf("clips=%+v", clips)
+	}
+}
+
+func TestLooksLikeSecondsAsFrames(t *testing.T) {
+	if !LooksLikeSecondsAsFrames(5, 5.7, 24) {
+		t.Fatal("expected 5 frames for a 5.7s clip to look like seconds")
+	}
+	if LooksLikeSecondsAsFrames(138, 5.7, 24) {
+		t.Fatal("real frame count should not be rewritten")
+	}
+}
+
 func TestTimelineClampsSourceOverflow(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

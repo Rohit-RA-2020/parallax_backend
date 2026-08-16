@@ -166,7 +166,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		tools.RegisterMedia(toolRegistry, tools.MediaEnv{Workspace: project.Dir, Bins: s.Bins, OnMutation: timelineTx.MarkMediaMutation})
-		tools.RegisterTimeline(toolRegistry, tools.TimelineEnv{Transaction: timelineTx, Store: s.Projects, ProjectID: projectID})
+		tools.RegisterTimeline(toolRegistry, tools.TimelineEnv{
+			Transaction: timelineTx,
+			Store:       s.Projects,
+			ProjectID:   projectID,
+			Workspace:   project.Dir,
+			Bins:        s.Bins,
+		})
 	}
 	if toolRegistry == nil {
 		writeError(w, http.StatusInternalServerError, "media tools are not configured")
