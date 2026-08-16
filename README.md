@@ -84,9 +84,12 @@ required by Gemini's OpenAI-compatible API.
 
 ## Transcripts and search
 
-On upload, files with audio are transcribed by a Python sidecar running
-**faster-whisper** (`large-v3-turbo`, CUDA int8 when a GPU is available).
-Word-level original language is stored at `.parallax/transcripts/<sha256>.json`.
+On upload, files with audio are transcribed by a long-lived **faster-whisper**
+worker (`large-v3-turbo`, CUDA int8 when a GPU is available). One file uses the
+GPU at a time. Word-level original language is stored at
+`.parallax/transcripts/<sha256>.json`. Unchanged soundtracks reuse that
+transcript. A Qdrant outage keeps the transcript and marks search indexing as
+failed instead of throwing the whole job away.
 
 Non-English segments are translated to English by the **active chat LLM**.
 English segment text (plus neighboring segments) is embedded through a

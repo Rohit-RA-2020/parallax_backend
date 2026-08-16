@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"parallax/internal/embed"
 	"parallax/internal/ffmpeg"
@@ -26,8 +27,16 @@ type Indexer struct {
 	Completer  func() llm.Completer
 	Logger     *slog.Logger
 
-	mu   sync.Mutex
-	live map[string]JobStatus
+	mu    sync.Mutex
+	live  map[string]JobStatus
+	queue chan indexJob
+	stop  chan struct{}
+	run   bool
+}
+
+type indexJob struct {
+	projectID string
+	rel       string
 }
 
 func (x *Indexer) log() *slog.Logger {
@@ -40,6 +49,81 @@ func (x *Indexer) log() *slog.Logger {
 // Enabled is true when ASR is configured. Embeddings may still be skipped.
 func (x *Indexer) Enabled() bool {
 	return x != nil && x.Projects != nil && x.Whisper != nil
+}
+
+// Start warms the whisper worker and processes one index job at a time.
+func (x *Indexer) Start() {
+	if x == nil {
+		return
+	}
+	x.mu.Lock()
+	if x.run {
+		x.mu.Unlock()
+		return
+	}
+	x.queue = make(chan indexJob, 128)
+	x.stop = make(chan struct{})
+	x.run = true
+	x.mu.Unlock()
+	if w, ok := x.Whisper.(*FasterWhisper); ok {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+			defer cancel()
+			if err := w.Ensure(ctx); err != nil {
+				x.log().Info("whisper worker will start on first file", "err", err)
+			}
+		}()
+	}
+	go x.loop()
+}
+
+// Enqueue schedules a file behind any job already using the GPU.
+func (x *Indexer) Enqueue(projectID, rel string) {
+	if !x.Enabled() {
+		return
+	}
+	rel = filepath.ToSlash(strings.TrimSpace(rel))
+	if rel == "" || !hasAudioExt(rel) {
+		return
+	}
+	x.Start()
+	x.Mark(projectID, rel, StateQueued, "")
+	select {
+	case x.queue <- indexJob{projectID: projectID, rel: rel}:
+	case <-x.stop:
+	}
+}
+
+func (x *Indexer) loop() {
+	for {
+		select {
+		case <-x.stop:
+			return
+		case job := <-x.queue:
+			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+			if err := x.Index(ctx, job.projectID, job.rel); err != nil {
+				x.Mark(job.projectID, job.rel, StateFailed, err.Error())
+				x.log().Error("index media", "project", job.projectID, "path", job.rel, "err", err)
+			}
+			cancel()
+		}
+	}
+}
+
+// Close stops the queue and the resident whisper worker.
+func (x *Indexer) Close() {
+	if x == nil {
+		return
+	}
+	x.mu.Lock()
+	if x.run && x.stop != nil {
+		close(x.stop)
+		x.run = false
+	}
+	x.mu.Unlock()
+	if w, ok := x.Whisper.(*FasterWhisper); ok {
+		w.Close()
+	}
 }
 
 // Index transcribes and embeds one project-relative media file.
@@ -80,9 +164,14 @@ func (x *Indexer) Index(ctx context.Context, projectID, rel string) error {
 	if err != nil {
 		return err
 	}
+	if complete(doc) && (!x.canEmbed() || doc.Embedded) {
+		x.Mark(projectID, rel, StateReady, "")
+		return nil
+	}
+
 	if doc == nil || len(doc.Segments) == 0 {
 		x.Mark(projectID, rel, StateTranscribing, "")
-		doc, err = x.transcribe(ctx, project.Dir, rel, hash, info.Duration)
+		doc, err = x.transcribe(ctx, projectID, project.Dir, rel, hash, info.Duration)
 		if err != nil {
 			return err
 		}
@@ -100,10 +189,20 @@ func (x *Indexer) Index(ctx context.Context, projectID, rel string) error {
 	if err := Save(project.Dir, doc); err != nil {
 		return err
 	}
-	if x.Embeddings != nil && x.Qdrant != nil {
-		x.Mark(projectID, rel, StateIndexing, "")
+	if !x.canEmbed() {
+		x.Mark(projectID, rel, StateReady, "")
+		return nil
 	}
+	x.Mark(projectID, rel, StateIndexing, "")
 	if err := x.upsert(ctx, projectID, doc); err != nil {
+		doc.Embedded = false
+		_ = Save(project.Dir, doc)
+		x.Mark(projectID, rel, StateIndexFailed, err.Error())
+		x.log().Error("transcript embed", "project", projectID, "path", rel, "err", err)
+		return nil
+	}
+	doc.Embedded = true
+	if err := Save(project.Dir, doc); err != nil {
 		return err
 	}
 	x.Mark(projectID, rel, StateReady, "")
@@ -119,14 +218,43 @@ func needsEnglish(segments []Segment) bool {
 	return false
 }
 
-func (x *Indexer) transcribe(ctx context.Context, projectDir, rel, hash string, duration float64) (*Document, error) {
+func complete(doc *Document) bool {
+	return doc != nil && len(doc.Segments) > 0 && !needsEnglish(doc.Segments)
+}
+
+func (x *Indexer) canEmbed() bool {
+	return x != nil && x.Embeddings != nil && x.Qdrant != nil
+}
+
+func (x *Indexer) transcribe(ctx context.Context, projectID, projectDir, rel, hash string, duration float64) (*Document, error) {
 	scratch := filepath.ToSlash(filepath.Join(".scratch", "asr-"+hash+".wav"))
 	if err := ffmpeg.ExtractMono16k(ctx, x.Bins, projectDir, rel, scratch); err != nil {
 		return nil, err
 	}
-	defer os.Remove(filepath.Join(projectDir, filepath.FromSlash(scratch)))
+	wavAbs := filepath.Join(projectDir, filepath.FromSlash(scratch))
+	defer os.Remove(wavAbs)
 
-	asr, err := x.Whisper.Transcribe(ctx, filepath.Join(projectDir, filepath.FromSlash(scratch)))
+	audioHash, err := projects.HashFile(wavAbs)
+	if err != nil {
+		return nil, err
+	}
+	if reused, err := FindByAudioHash(projectDir, audioHash); err != nil {
+		return nil, err
+	} else if reused != nil {
+		reused.ContentHash = hash
+		reused.Path = rel
+		reused.AudioHash = audioHash
+		reused.Duration = duration
+		reused.Embedded = false
+		if err := Save(projectDir, reused); err != nil {
+			return nil, err
+		}
+		return reused, nil
+	}
+
+	asr, err := x.Whisper.Transcribe(ctx, wavAbs, func(at, total float64) {
+		x.MarkProgress(projectID, rel, at, total)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -137,6 +265,7 @@ func (x *Indexer) transcribe(ctx context.Context, projectDir, rel, hash string, 
 		Language:    asr.Language,
 		Duration:    duration,
 		ASRModel:    asr.Model,
+		AudioHash:   audioHash,
 		Words:       asr.Words,
 		Segments:    asr.Segments,
 	}
@@ -147,14 +276,14 @@ func (x *Indexer) transcribe(ctx context.Context, projectDir, rel, hash string, 
 }
 
 func (x *Indexer) ensureEnglish(ctx context.Context, doc *Document) error {
-	missing := false
-	for i := range doc.Segments {
-		if strings.TrimSpace(doc.Segments[i].Text) != "" && strings.TrimSpace(doc.Segments[i].TextEN) == "" {
-			missing = true
-			break
+	if looksEnglish(doc.Language) {
+		for i := range doc.Segments {
+			if strings.TrimSpace(doc.Segments[i].TextEN) == "" {
+				doc.Segments[i].TextEN = strings.TrimSpace(doc.Segments[i].Text)
+			}
 		}
 	}
-	if !missing {
+	if !needsEnglish(doc.Segments) {
 		return nil
 	}
 	if x.Completer == nil {

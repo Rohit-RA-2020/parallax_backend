@@ -27,6 +27,10 @@ func TestMarkPersistsAndLiveOverrides(t *testing.T) {
 	if got["media/talk.mp4"].State != StateReady || got["media/talk.mp4"].Error != "" {
 		t.Fatalf("ready=%+v", got)
 	}
+	idx.MarkProgress(project.ID, "media/talk.mp4", 72, 900)
+	if idx.Statuses(project.ID)["media/talk.mp4"].Progress != "1:12 / 15:00" {
+		t.Fatalf("progress=%+v", idx.Statuses(project.ID)["media/talk.mp4"])
+	}
 	idx.Clear(project.ID, "media/talk.mp4")
 	if _, ok := idx.Statuses(project.ID)["media/talk.mp4"]; ok {
 		t.Fatal("status should be cleared")

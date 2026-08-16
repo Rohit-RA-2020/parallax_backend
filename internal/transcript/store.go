@@ -36,6 +36,8 @@ type Document struct {
 	Language    string    `json:"language,omitempty"`
 	Duration    float64   `json:"duration,omitempty"`
 	ASRModel    string    `json:"asr_model,omitempty"`
+	AudioHash   string    `json:"audio_hash,omitempty"`
+	Embedded    bool      `json:"embedded,omitempty"`
 	Words       []Word    `json:"words"`
 	Segments    []Segment `json:"segments"`
 	UpdatedAt   time.Time `json:"updated_at"`
@@ -112,6 +114,39 @@ func Save(projectDir string, doc *Document) error {
 	}
 	ok = true
 	return nil
+}
+
+// FindByAudioHash returns a transcript whose soundtrack hash matches.
+func FindByAudioHash(projectDir, audioHash string) (*Document, error) {
+	audioHash = strings.TrimSpace(audioHash)
+	if audioHash == "" {
+		return nil, nil
+	}
+	dir := filepath.Join(projectDir, ".parallax", "transcripts")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		var doc Document
+		if json.Unmarshal(b, &doc) != nil {
+			continue
+		}
+		if doc.AudioHash == audioHash && len(doc.Segments) > 0 {
+			return &doc, nil
+		}
+	}
+	return nil, nil
 }
 
 // NeighborWindow is English text for embedding: previous + this + next segment.

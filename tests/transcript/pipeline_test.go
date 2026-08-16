@@ -24,8 +24,18 @@ type fakeASR struct {
 	result ASRResult
 }
 
-func (f fakeASR) Transcribe(context.Context, string) (ASRResult, error) {
+func (f fakeASR) Transcribe(context.Context, string, ProgressFunc) (ASRResult, error) {
 	return f.result, nil
+}
+
+type countingASR struct {
+	result ASRResult
+	n      int
+}
+
+func (c *countingASR) Transcribe(context.Context, string, ProgressFunc) (ASRResult, error) {
+	c.n++
+	return c.result, nil
 }
 
 func TestIndexerWritesTranscriptAndUpsertsEnglishVectors(t *testing.T) {
@@ -156,5 +166,137 @@ func TestIndexerSkipsImages(t *testing.T) {
 	}
 	if idx.Statuses(project.ID)["media/still.jpg"].State != StateSkipped {
 		t.Fatalf("status=%+v", idx.Statuses(project.ID))
+	}
+}
+
+func TestFindByAudioHash(t *testing.T) {
+	dir := t.TempDir()
+	doc := &Document{
+		ContentHash: "aaa",
+		Path:        "media/a.mp4",
+		AudioHash:   "audio-1",
+		Segments:    []Segment{{ID: "seg-0000", Text: "Hi", TextEN: "Hi"}},
+	}
+	if err := Save(dir, doc); err != nil {
+		t.Fatal(err)
+	}
+	got, err := FindByAudioHash(dir, "audio-1")
+	if err != nil || got == nil || got.ContentHash != "aaa" {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+	missing, err := FindByAudioHash(dir, "nope")
+	if err != nil || missing != nil {
+		t.Fatalf("missing=%+v err=%v", missing, err)
+	}
+}
+
+func TestIndexerSkipsCompletedTranscript(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skip("ffprobe not installed")
+	}
+	store, err := projects.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := store.Create("Skip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(project.Dir, "media", "talk.mp4")
+	if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("ffmpeg", "-y", "-f", "lavfi", "-i", "sine=f=440:d=0.4", "-f", "lavfi", "-i", "color=c=black:s=16x16:d=0.4", "-shortest", "-pix_fmt", "yuv420p", src)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg: %v\n%s", err, out)
+	}
+	hash, err := projects.HashFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(project.Dir, &Document{
+		ContentHash: hash,
+		Path:        "media/talk.mp4",
+		Embedded:    true,
+		Segments:    []Segment{{ID: "seg-0000", Text: "Hi", TextEN: "Hi"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	asr := &countingASR{result: ASRResult{Language: "en", Segments: []Segment{{Text: "new"}}}}
+	idx := &Indexer{Projects: store, Bins: ffmpeg.Bins{FFmpeg: "ffmpeg", FFprobe: "ffprobe"}, Whisper: asr}
+	if err := idx.Index(context.Background(), project.ID, "media/talk.mp4"); err != nil {
+		t.Fatal(err)
+	}
+	if asr.n != 0 {
+		t.Fatalf("whisper ran %d times", asr.n)
+	}
+	if idx.Statuses(project.ID)["media/talk.mp4"].State != StateReady {
+		t.Fatalf("status=%+v", idx.Statuses(project.ID))
+	}
+}
+
+func TestIndexerKeepsTranscriptWhenQdrantFails(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skip("ffprobe not installed")
+	}
+	store, err := projects.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := store.Create("Fail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(project.Dir, "media", "talk.mp4")
+	if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("ffmpeg", "-y", "-f", "lavfi", "-i", "sine=f=440:d=0.4", "-f", "lavfi", "-i", "color=c=black:s=16x16:d=0.4", "-shortest", "-pix_fmt", "yuv420p", src)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg: %v\n%s", err, out)
+	}
+	qd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			http.Error(w, "missing", http.StatusNotFound)
+			return
+		}
+		if strings.Contains(r.URL.Path, "/points") && !strings.Contains(r.URL.Path, "/delete") {
+			http.Error(w, "down", http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte(`{"result":true}`))
+	}))
+	defer qd.Close()
+	embSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"index": 0, "embedding": []float32{0.1, 0.2}}}})
+	}))
+	defer embSrv.Close()
+	emb := embed.NewClient(embSrv.URL+"/v1", "k", "m")
+	emb.HTTPClient = embSrv.Client()
+	client := qdrant.NewClient(qd.URL, "")
+	client.HTTPClient = qd.Client()
+	idx := &Indexer{
+		Projects:   store,
+		Bins:       ffmpeg.Bins{FFmpeg: "ffmpeg", FFprobe: "ffprobe"},
+		Whisper:    fakeASR{result: ASRResult{Language: "en", Segments: []Segment{{Text: "Hello"}}, Words: []Word{{Text: "Hello"}}}},
+		Embeddings: emb,
+		Qdrant:     client,
+	}
+	if err := idx.Index(context.Background(), project.ID, "media/talk.mp4"); err != nil {
+		t.Fatal(err)
+	}
+	if idx.Statuses(project.ID)["media/talk.mp4"].State != StateIndexFailed {
+		t.Fatalf("status=%+v", idx.Statuses(project.ID))
+	}
+	hash, _ := projects.HashFile(src)
+	doc, err := Load(project.Dir, hash)
+	if err != nil || doc == nil || doc.Segments[0].TextEN != "Hello" {
+		t.Fatalf("doc=%+v err=%v", doc, err)
 	}
 }

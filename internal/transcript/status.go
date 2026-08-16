@@ -2,6 +2,7 @@ package transcript
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ const (
 	StateTranslating  = "translating"
 	StateIndexing     = "indexing"
 	StateReady        = "ready"
+	StateIndexFailed  = "index_failed"
 	StateFailed       = "failed"
 	StateSkipped      = "skipped"
 )
@@ -24,6 +26,9 @@ type JobStatus struct {
 	State     string    `json:"state"`
 	Hash      string    `json:"hash,omitempty"`
 	Error     string    `json:"error,omitempty"`
+	Progress  string    `json:"progress,omitempty"`
+	At        float64   `json:"at,omitempty"`
+	Duration  float64   `json:"duration,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -56,16 +61,48 @@ func (x *Indexer) Mark(projectID, rel, state, errMsg string) {
 		Error:     strings.TrimSpace(errMsg),
 		UpdatedAt: time.Now().UTC(),
 	}
-	x.mu.Lock()
-	x.ensureLive()
-	x.live[statusKey(projectID, rel)] = st
-	x.mu.Unlock()
+	x.setLive(projectID, rel, st)
 
 	project, err := x.Projects.Get(projectID)
 	if err != nil {
 		return
 	}
 	_ = writeStatus(project.Dir, st)
+}
+
+// MarkProgress updates live transcribe position without rewriting disk.
+func (x *Indexer) MarkProgress(projectID, rel string, at, duration float64) {
+	if x == nil {
+		return
+	}
+	rel = filepath.ToSlash(strings.TrimSpace(rel))
+	if rel == "" {
+		return
+	}
+	st := JobStatus{
+		Path:      rel,
+		State:     StateTranscribing,
+		Progress:  formatClock(at) + " / " + formatClock(duration),
+		At:        at,
+		Duration:  duration,
+		UpdatedAt: time.Now().UTC(),
+	}
+	x.setLive(projectID, rel, st)
+}
+
+func (x *Indexer) setLive(projectID, rel string, st JobStatus) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	x.ensureLive()
+	x.live[statusKey(projectID, rel)] = st
+}
+
+func formatClock(sec float64) string {
+	if sec < 0 {
+		sec = 0
+	}
+	total := int(sec + 0.5)
+	return fmt.Sprintf("%d:%02d", total/60, total%60)
 }
 
 // Clear removes a file's stored index status.

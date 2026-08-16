@@ -6,9 +6,12 @@ import (
 	"unicode"
 )
 
+// ProgressFunc reports decode position in seconds.
+type ProgressFunc func(at, duration float64)
+
 // Transcriber turns a 16 kHz mono wav into words and segments.
 type Transcriber interface {
-	Transcribe(ctx context.Context, wavPath string) (ASRResult, error)
+	Transcribe(ctx context.Context, wavPath string, progress ProgressFunc) (ASRResult, error)
 }
 
 // ASRResult is one Whisper pass over a file.

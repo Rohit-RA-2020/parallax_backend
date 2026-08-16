@@ -20,7 +20,7 @@ func TestFasterWhisperParsesScriptJSON(t *testing.T) {
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got, err := (FasterWhisper{Python: "python3", Script: script, Model: "large-v3-turbo"}).Transcribe(context.Background(), wav)
+	got, err := (&FasterWhisper{Python: "python3", Script: script, Model: "large-v3-turbo"}).Transcribe(context.Background(), wav, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -46,15 +45,7 @@ func (s *Server) indexMedia(projectID, rel string) {
 	if rel == "" || !transcript.HasSpeech(rel) {
 		return
 	}
-	s.Indexer.Mark(projectID, rel, transcript.StateQueued, "")
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
-		defer cancel()
-		if err := s.Indexer.Index(ctx, projectID, rel); err != nil {
-			s.Indexer.Mark(projectID, rel, transcript.StateFailed, err.Error())
-			s.log().Error("index media", "project", projectID, "path", rel, "err", err)
-		}
-	}()
+	s.Indexer.Enqueue(projectID, rel)
 }
 
 func (s *Server) systemPrompt() string {

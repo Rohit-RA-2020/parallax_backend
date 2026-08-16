@@ -57,7 +57,7 @@ func main() {
 		idx := &transcript.Indexer{
 			Projects: projectStore,
 			Bins:     bins,
-			Whisper: transcript.FasterWhisper{
+			Whisper: &transcript.FasterWhisper{
 				Python:  cfg.WhisperPython,
 				Script:  cfg.WhisperScript,
 				Model:   cfg.WhisperModel,
@@ -75,6 +75,7 @@ func main() {
 		} else {
 			idx.Embeddings = embed.NewClient(cfg.Embedding.BaseURL, cfg.Embedding.APIKey, cfg.Embedding.Model)
 		}
+		idx.Start()
 		indexer = idx
 	} else {
 		log.Info("transcript indexing disabled", "reason", "faster-whisper script is missing")
@@ -122,6 +123,9 @@ func main() {
 	}()
 
 	<-ctx.Done()
+	if indexer != nil {
+		indexer.Close()
+	}
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(shutdown)
