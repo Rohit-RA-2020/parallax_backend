@@ -3,9 +3,11 @@ package tools_test
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
+	"parallax/internal/ffmpeg"
 	"parallax/internal/projects"
 	"parallax/internal/qdrant"
 	"parallax/internal/tools"
@@ -70,5 +72,56 @@ func TestSearchTranscriptRequiresQuery(t *testing.T) {
 	res := reg.Execute(context.Background(), "search_transcript", `{"query":"thanks"}`)
 	if res.OK {
 		t.Fatal("expected missing embedder error")
+	}
+}
+
+func TestAddCaptionsWritesSoftTrack(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skip("ffprobe not installed")
+	}
+	store, err := projects.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := store.Create("Caps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(project.Dir, "media", "talk.mp4")
+	if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("ffmpeg", "-y", "-f", "lavfi", "-i", "sine=f=440:d=1", "-f", "lavfi", "-i", "color=c=black:s=32x32:d=1", "-shortest", "-pix_fmt", "yuv420p", src)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg: %v\n%s", err, out)
+	}
+	hash, err := projects.HashFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transcript.Save(project.Dir, &transcript.Document{
+		ContentHash: hash,
+		Path:        "media/talk.mp4",
+		Language:    "en",
+		Segments:    []transcript.Segment{{Start: 0.1, End: 0.8, Text: "Hello there", TextEN: "Hello there"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	tools.RegisterTranscript(reg, tools.TranscriptEnv{
+		Indexer:   &transcript.Indexer{Projects: store},
+		ProjectID: project.ID,
+		Workspace: project.Dir,
+		Bins:      ffmpeg.Bins{FFmpeg: "ffmpeg", FFprobe: "ffprobe"},
+	})
+	res := reg.Execute(context.Background(), "add_captions", `{"path":"media/talk.mp4","language":"en","style":"soft"}`)
+	if !res.OK {
+		t.Fatal(res.Error)
+	}
+	if _, err := os.Stat(filepath.Join(project.Dir, "media", "talk.en.srt")); err != nil {
+		t.Fatal(err)
 	}
 }

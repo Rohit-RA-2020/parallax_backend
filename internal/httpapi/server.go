@@ -204,7 +204,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			Workspace:   project.Dir,
 			Bins:        s.Bins,
 		})
-		tools.RegisterTranscript(toolRegistry, tools.TranscriptEnv{Indexer: s.Indexer, ProjectID: projectID})
+		tools.RegisterTranscript(toolRegistry, tools.TranscriptEnv{
+			Indexer:    s.Indexer,
+			ProjectID:  projectID,
+			Workspace:  project.Dir,
+			Bins:       s.Bins,
+			OnMutation: timelineTx.MarkMediaMutation,
+			OnApplied:  func(rel string) { s.indexMedia(projectID, rel) },
+		})
 	}
 	if toolRegistry == nil {
 		writeError(w, http.StatusInternalServerError, "media tools are not configured")

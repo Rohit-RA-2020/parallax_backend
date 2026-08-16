@@ -20,7 +20,7 @@ Agent loop  (no framework)
     ├── list_workspace / inspect_file / probe_media
     └── run_ffmpeg  →  argv parse → sandbox validate → exec.Command (no shell)
     └── search_web   →  Exa Search API (links + highlights/full page text)
-    └── search_transcript / get_transcript  →  Whisper + English index in Qdrant
+    └── search_transcript / get_transcript / add_captions  →  Whisper index + timed captions
     │
     ▼
 Any OpenAI-compatible /v1/chat/completions
@@ -201,6 +201,7 @@ project fps, source in-points, and media paths (not playback URLs).
 | `search_web` | Search the web through Exa for links, metadata, and page content |
 | `search_transcript` | English semantic search over this project's speech (optional path filter) |
 | `get_transcript` | Read the timed original + English transcript for one file |
+| `add_captions` | Burn or remux timed captions from the stored transcript in a chosen language |
 
 ## Tests
 
