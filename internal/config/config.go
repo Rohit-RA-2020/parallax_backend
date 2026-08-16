@@ -45,6 +45,8 @@ type Config struct {
 	WorkspaceDir string
 	DataDir      string
 	SettingsPath string
+	ExaAPIKey    string
+	ExaBaseURL   string
 	MaxIters     int
 	FFmpegBin    string
 	FFprobeBin   string
@@ -78,6 +80,8 @@ func Load() (Config, error) {
 		WorkspaceDir: workspace,
 		DataDir:      data,
 		SettingsPath: filepath.Join(data, "settings.json"),
+		ExaAPIKey:    strings.TrimSpace(os.Getenv("EXA_API_KEY")),
+		ExaBaseURL:   envOr("EXA_BASE_URL", "https://api.exa.ai"),
 		MaxIters:     envInt("PARALLAX_MAX_ITERS", DefaultMaxIters),
 		FFmpegBin:    envOr("FFMPEG_BIN", "ffmpeg"),
 		FFprobeBin:   envOr("FFPROBE_BIN", "ffprobe"),

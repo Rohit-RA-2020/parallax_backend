@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -25,7 +26,14 @@ type ChatMeta struct {
 
 type Chat struct {
 	ChatMeta
-	Messages []llm.Message `json:"messages"`
+	Messages          []llm.Message               `json:"messages"`
+	ResponseDurations map[string]int64            `json:"response_durations,omitempty"`
+	ResponseTraces    map[string][]ChatTraceEvent `json:"response_traces,omitempty"`
+}
+
+type ChatTraceEvent struct {
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data"`
 }
 
 type chatIndex struct {
@@ -72,6 +80,47 @@ func (s *Store) CreateChat(projectID, title string) (Chat, error) {
 		return Chat{}, err
 	}
 	return chat, nil
+}
+
+// SetChatResponseMetadata records elapsed time and a compact event trace for
+// the final assistant turn of one Director request. Keys are message indexes
+// so existing chat files remain readable and repeated response text does not
+// collide.
+func (s *Store) SetChatResponseMetadata(projectID, chatID string, msgs []llm.Message, durationMS int64, trace []ChatTraceEvent) error {
+	if durationMS < 0 {
+		durationMS = 0
+	}
+	p, err := s.Get(projectID)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	chat, err := readChat(p, chatID)
+	if err != nil {
+		return err
+	}
+	index := -1
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == llm.RoleAssistant && strings.TrimSpace(msgs[i].Content) != "" {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return nil
+	}
+	if chat.ResponseDurations == nil {
+		chat.ResponseDurations = map[string]int64{}
+	}
+	chat.ResponseDurations[strconv.Itoa(index)] = durationMS
+	if len(trace) > 0 {
+		if chat.ResponseTraces == nil {
+			chat.ResponseTraces = map[string][]ChatTraceEvent{}
+		}
+		chat.ResponseTraces[strconv.Itoa(index)] = append([]ChatTraceEvent(nil), trace...)
+	}
+	return writeChat(p, chat)
 }
 
 func (s *Store) GetChat(projectID, chatID string) (Chat, error) {
@@ -361,9 +410,9 @@ func firstLineTitle(s string) string {
 	return strings.TrimSpace(b.String())
 }
 
-func PublicChatMessages(msgs []llm.Message) []map[string]string {
-	out := make([]map[string]string, 0, len(msgs))
-	for _, m := range msgs {
+func PublicChatMessages(msgs []llm.Message, durations map[string]int64, traces map[string][]ChatTraceEvent) []map[string]any {
+	out := make([]map[string]any, 0, len(msgs))
+	for index, m := range msgs {
 		if m.Role != llm.RoleUser && m.Role != llm.RoleAssistant {
 			continue
 		}
@@ -371,10 +420,19 @@ func PublicChatMessages(msgs []llm.Message) []map[string]string {
 		if text == "" {
 			continue
 		}
-		out = append(out, map[string]string{
+		item := map[string]any{
 			"role":    string(m.Role),
 			"content": text,
-		})
+		}
+		if m.Role == llm.RoleAssistant {
+			if duration, ok := durations[strconv.Itoa(index)]; ok && duration > 0 {
+				item["worked_ms"] = duration
+			}
+			if trace, ok := traces[strconv.Itoa(index)]; ok && len(trace) > 0 {
+				item["trace_events"] = trace
+			}
+		}
+		out = append(out, item)
 	}
 	return out
 }

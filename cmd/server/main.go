@@ -36,6 +36,7 @@ func main() {
 			FFprobe: cfg.FFprobeBin,
 		},
 	})
+	tools.RegisterWeb(reg, tools.WebEnv{APIKey: cfg.ExaAPIKey, BaseURL: cfg.ExaBaseURL})
 	projectStore, err := projects.NewStore(cfg.WorkspaceDir + "/projects")
 	if err != nil {
 		log.Error("projects", "err", err)
@@ -43,10 +44,12 @@ func main() {
 	}
 
 	srv := &httpapi.Server{
-		Addr:     cfg.Addr,
-		Settings: config.NewStore(cfg.SettingsPath, cfg.LLMs),
-		Sessions: agent.NewStore(),
-		Tools:    reg,
+		Addr:       cfg.Addr,
+		Settings:   config.NewStore(cfg.SettingsPath, cfg.LLMs),
+		Sessions:   agent.NewStore(),
+		Tools:      reg,
+		ExaAPIKey:  cfg.ExaAPIKey,
+		ExaBaseURL: cfg.ExaBaseURL,
 		Bins: ffmpeg.Bins{
 			FFmpeg:  cfg.FFmpegBin,
 			FFprobe: cfg.FFprobeBin,

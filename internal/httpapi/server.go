@@ -20,16 +20,18 @@ import (
 type ProviderFactory func(cfg config.LLM) llm.ChatProvider
 
 type Server struct {
-	Addr      string
-	Settings  *config.Store
-	Sessions  *agent.Store
-	Tools     *tools.Registry
-	Bins      ffmpeg.Bins
-	Projects  *projects.Store
-	NewLLM    ProviderFactory
-	MaxIters  int
-	Logger    *slog.Logger
-	Workspace string
+	Addr       string
+	Settings   *config.Store
+	Sessions   *agent.Store
+	Tools      *tools.Registry
+	ExaAPIKey  string
+	ExaBaseURL string
+	Bins       ffmpeg.Bins
+	Projects   *projects.Store
+	NewLLM     ProviderFactory
+	MaxIters   int
+	Logger     *slog.Logger
+	Workspace  string
 }
 
 func (s *Server) log() *slog.Logger {
@@ -117,6 +119,7 @@ type chatRequest struct {
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
+	requestStartedAt := time.Now()
 	var req chatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -166,6 +169,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		tools.RegisterMedia(toolRegistry, tools.MediaEnv{Workspace: project.Dir, Bins: s.Bins, OnMutation: timelineTx.MarkMediaMutation})
+		tools.RegisterWeb(toolRegistry, tools.WebEnv{APIKey: s.ExaAPIKey, BaseURL: s.ExaBaseURL})
 		tools.RegisterTimeline(toolRegistry, tools.TimelineEnv{
 			Transaction: timelineTx,
 			Store:       s.Projects,
@@ -244,6 +248,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 		c.ExtraHeaders["x-grok-conv-id"] = sess.ID
 	}
+	var traceEvents []projects.ChatTraceEvent
 
 	ag := &agent.Agent{
 		Provider: provider,
@@ -256,6 +261,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		Messages:       msgs,
 		ThinkingEffort: thinkingEffort,
 	}, func(ev agent.Event) {
+		if ev.Type != agent.EventText && ev.Type != agent.EventSession && ev.Type != agent.EventProjectChanged {
+			traceEvents = append(traceEvents, projects.ChatTraceEvent{Type: string(ev.Type), Data: append([]byte(nil), ev.Data...)})
+		}
 		_ = stream.Event(ev)
 	})
 	if timelineTx != nil {
@@ -273,6 +281,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if projectID != "" {
 		if _, err := s.Projects.SaveChatMessages(projectID, sess.ID, out.Messages); err != nil {
 			s.log().Error("persist chat", "project", projectID, "chat", sess.ID, "err", err)
+		}
+		if out.Reason != "error" && out.Reason != "canceled" && out.Reason != "max_iterations" {
+			if err := s.Projects.SetChatResponseMetadata(projectID, sess.ID, out.Messages, time.Since(requestStartedAt).Milliseconds(), traceEvents); err != nil {
+				s.log().Error("persist response duration", "project", projectID, "chat", sess.ID, "err", err)
+			}
 		}
 		_ = s.Projects.Touch(projectID)
 	}

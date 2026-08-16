@@ -19,6 +19,7 @@ Agent loop  (no framework)
     │
     ├── list_workspace / inspect_file / probe_media
     └── run_ffmpeg  →  argv parse → sandbox validate → exec.Command (no shell)
+    └── search_web   →  Exa Search API (links + highlights/full page text)
     │
     ▼
 Any OpenAI-compatible /v1/chat/completions
@@ -46,6 +47,12 @@ LLM_OPENAI_BASE_URL=https://api.openai.com/v1
 LLM_OPENAI_MODEL=gpt-4.1
 LLM_OPENAI_API_KEY=sk-…
 ```
+
+To enable Director web search, set `EXA_API_KEY` in the backend environment.
+The server keeps the key private and exposes a `search_web` function to
+Director. It uses Exa's `/search` endpoint, defaults to compact highlights,
+and supports full page text with `content_mode: "text"`. `EXA_BASE_URL` is
+optional and defaults to `https://api.exa.ai`.
 
 If `LLM_MODELS` is unset, the original single-model vars still work:
 
@@ -159,6 +166,7 @@ project fps, source in-points, and media paths (not playback URLs).
 | `undo_project_change` / `redo_project_change` | Stage persistent history navigation |
 | `restore_project_revision` | Restore a selected revision |
 | `create_project_checkpoint` | Name the state committed by the current request |
+| `search_web` | Search the web through Exa for links, metadata, and page content |
 
 ## Tests
 

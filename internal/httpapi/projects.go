@@ -330,7 +330,7 @@ func chatResponse(chat projects.Chat, includeMessages bool) map[string]any {
 		"updated_at": chat.UpdatedAt,
 	}
 	if includeMessages {
-		out["messages"] = projects.PublicChatMessages(chat.Messages)
+		out["messages"] = projects.PublicChatMessages(chat.Messages, chat.ResponseDurations, chat.ResponseTraces)
 	}
 	return out
 }
