@@ -27,6 +27,7 @@ func main() {
 		log.Error("config", "err", err)
 		os.Exit(1)
 	}
+	systemPrompt := agent.SystemPromptAt(time.Now())
 
 	reg := tools.NewRegistry()
 	tools.RegisterMedia(reg, tools.MediaEnv{
@@ -44,12 +45,13 @@ func main() {
 	}
 
 	srv := &httpapi.Server{
-		Addr:       cfg.Addr,
-		Settings:   config.NewStore(cfg.SettingsPath, cfg.LLMs),
-		Sessions:   agent.NewStore(),
-		Tools:      reg,
-		ExaAPIKey:  cfg.ExaAPIKey,
-		ExaBaseURL: cfg.ExaBaseURL,
+		Addr:         cfg.Addr,
+		Settings:     config.NewStore(cfg.SettingsPath, cfg.LLMs),
+		Sessions:     agent.NewStore(),
+		Tools:        reg,
+		SystemPrompt: systemPrompt,
+		ExaAPIKey:    cfg.ExaAPIKey,
+		ExaBaseURL:   cfg.ExaBaseURL,
 		Bins: ffmpeg.Bins{
 			FFmpeg:  cfg.FFmpegBin,
 			FFprobe: cfg.FFprobeBin,

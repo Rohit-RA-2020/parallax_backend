@@ -20,18 +20,26 @@ import (
 type ProviderFactory func(cfg config.LLM) llm.ChatProvider
 
 type Server struct {
-	Addr       string
-	Settings   *config.Store
-	Sessions   *agent.Store
-	Tools      *tools.Registry
-	ExaAPIKey  string
-	ExaBaseURL string
-	Bins       ffmpeg.Bins
-	Projects   *projects.Store
-	NewLLM     ProviderFactory
-	MaxIters   int
-	Logger     *slog.Logger
-	Workspace  string
+	Addr         string
+	Settings     *config.Store
+	Sessions     *agent.Store
+	Tools        *tools.Registry
+	SystemPrompt string
+	ExaAPIKey    string
+	ExaBaseURL   string
+	Bins         ffmpeg.Bins
+	Projects     *projects.Store
+	NewLLM       ProviderFactory
+	MaxIters     int
+	Logger       *slog.Logger
+	Workspace    string
+}
+
+func (s *Server) systemPrompt() string {
+	if strings.TrimSpace(s.SystemPrompt) != "" {
+		return s.SystemPrompt
+	}
+	return agent.SystemPrompt
 }
 
 func (s *Server) log() *slog.Logger {
@@ -120,6 +128,7 @@ type chatRequest struct {
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	requestStartedAt := time.Now()
+	systemPrompt := s.systemPrompt()
 	var req chatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -205,9 +214,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	msgs := append([]llm.Message(nil), sess.Messages...)
 	if len(msgs) == 0 || msgs[0].Role != llm.RoleSystem {
-		msgs = append([]llm.Message{{Role: llm.RoleSystem, Content: agent.SystemPrompt}}, msgs...)
+		msgs = append([]llm.Message{{Role: llm.RoleSystem, Content: systemPrompt}}, msgs...)
 	} else {
-		msgs[0].Content = agent.SystemPrompt
+		msgs[0].Content = systemPrompt
 	}
 	if len(req.Messages) > 0 {
 		// Caller-supplied history replaces the conversation but keeps the system prompt.
