@@ -41,6 +41,12 @@ func main() {
 		},
 	})
 	tools.RegisterWeb(reg, tools.WebEnv{APIKey: cfg.ExaAPIKey, BaseURL: cfg.ExaBaseURL})
+	tools.RegisterImage(reg, tools.ImageEnv{
+		Workspace: cfg.WorkspaceDir,
+		APIKey:    cfg.GeminiAPIKey,
+		BaseURL:   cfg.GeminiBaseURL,
+		Model:     cfg.GeminiImageModel,
+	})
 	projectStore, err := projects.NewStore(cfg.WorkspaceDir + "/projects")
 	if err != nil {
 		log.Error("projects", "err", err)
@@ -82,19 +88,22 @@ func main() {
 	}
 
 	srv := &httpapi.Server{
-		Addr:         cfg.Addr,
-		Settings:     settings,
-		Sessions:     agent.NewStore(),
-		Tools:        reg,
-		SystemPrompt: systemPrompt,
-		ExaAPIKey:    cfg.ExaAPIKey,
-		ExaBaseURL:   cfg.ExaBaseURL,
-		Bins:         bins,
-		Projects:     projectStore,
-		MaxIters:     cfg.MaxIters,
-		Logger:       log,
-		Workspace:    cfg.WorkspaceDir,
-		Indexer:      indexer,
+		Addr:             cfg.Addr,
+		Settings:         settings,
+		Sessions:         agent.NewStore(),
+		Tools:            reg,
+		SystemPrompt:     systemPrompt,
+		ExaAPIKey:        cfg.ExaAPIKey,
+		ExaBaseURL:       cfg.ExaBaseURL,
+		GeminiAPIKey:     cfg.GeminiAPIKey,
+		GeminiBaseURL:    cfg.GeminiBaseURL,
+		GeminiImageModel: cfg.GeminiImageModel,
+		Bins:             bins,
+		Projects:         projectStore,
+		MaxIters:         cfg.MaxIters,
+		Logger:           log,
+		Workspace:        cfg.WorkspaceDir,
+		Indexer:          indexer,
 		NewLLM: func(l config.LLM) llm.ChatProvider {
 			return llm.NewCompatClient(l.BaseURL, l.APIKey, l.Model)
 		},

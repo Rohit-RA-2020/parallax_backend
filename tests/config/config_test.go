@@ -154,6 +154,28 @@ func TestLoadEmbeddingQdrantAndWhisper(t *testing.T) {
 	}
 }
 
+func TestLoadGeminiImageSettings(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PARALLAX_WORKSPACE", filepath.Join(dir, "ws"))
+	t.Setenv("PARALLAX_DATA", filepath.Join(dir, "data"))
+	t.Setenv("GEMINI_API_KEY", "gemini-secret")
+	t.Setenv("GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta/")
+	t.Setenv("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GeminiAPIKey != "gemini-secret" {
+		t.Fatalf("key=%q", cfg.GeminiAPIKey)
+	}
+	if cfg.GeminiBaseURL != "https://generativelanguage.googleapis.com/v1beta" {
+		t.Fatalf("base=%s", cfg.GeminiBaseURL)
+	}
+	if cfg.GeminiImageModel != "gemini-3.1-flash-image" {
+		t.Fatalf("model=%s", cfg.GeminiImageModel)
+	}
+}
+
 func TestLoadLLMProfilesFromModelsList(t *testing.T) {
 	t.Setenv("LLM_PROFILES", "")
 	t.Setenv("LLM_MODELS", "grok, gpt")

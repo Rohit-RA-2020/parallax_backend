@@ -41,24 +41,27 @@ type Settings struct {
 
 // Config is the process-wide snapshot used at startup.
 type Config struct {
-	Addr           string
-	WorkspaceDir   string
-	DataDir        string
-	SettingsPath   string
-	ExaAPIKey      string
-	ExaBaseURL     string
-	MaxIters       int
-	FFmpegBin      string
-	FFprobeBin     string
-	LLMs           []LLM
-	Embedding      Embedding
-	QdrantURL      string
-	QdrantAPIKey   string
-	WhisperModel   string
-	WhisperDevice  string
-	WhisperPython  string
-	WhisperScript  string
-	WhisperCompute string
+	Addr             string
+	WorkspaceDir     string
+	DataDir          string
+	SettingsPath     string
+	ExaAPIKey        string
+	ExaBaseURL       string
+	GeminiAPIKey     string
+	GeminiBaseURL    string
+	GeminiImageModel string
+	MaxIters         int
+	FFmpegBin        string
+	FFprobeBin       string
+	LLMs             []LLM
+	Embedding        Embedding
+	QdrantURL        string
+	QdrantAPIKey     string
+	WhisperModel     string
+	WhisperDevice    string
+	WhisperPython    string
+	WhisperScript    string
+	WhisperCompute   string
 }
 
 // Embedding is a separate OpenAI-compatible /v1/embeddings endpoint.
@@ -92,16 +95,19 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		Addr:         envOr("PARALLAX_ADDR", DefaultAddr),
-		WorkspaceDir: workspace,
-		DataDir:      data,
-		SettingsPath: filepath.Join(data, "settings.json"),
-		ExaAPIKey:    strings.TrimSpace(os.Getenv("EXA_API_KEY")),
-		ExaBaseURL:   envOr("EXA_BASE_URL", "https://api.exa.ai"),
-		MaxIters:     envInt("PARALLAX_MAX_ITERS", DefaultMaxIters),
-		FFmpegBin:    envOr("FFMPEG_BIN", "ffmpeg"),
-		FFprobeBin:   envOr("FFPROBE_BIN", "ffprobe"),
-		LLMs:         LoadLLMProfiles(),
+		Addr:             envOr("PARALLAX_ADDR", DefaultAddr),
+		WorkspaceDir:     workspace,
+		DataDir:          data,
+		SettingsPath:     filepath.Join(data, "settings.json"),
+		ExaAPIKey:        strings.TrimSpace(os.Getenv("EXA_API_KEY")),
+		ExaBaseURL:       envOr("EXA_BASE_URL", "https://api.exa.ai"),
+		GeminiAPIKey:     firstNonEmpty(os.Getenv("GEMINI_API_KEY"), os.Getenv("GOOGLE_API_KEY")),
+		GeminiBaseURL:    strings.TrimRight(envOr("GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta"), "/"),
+		GeminiImageModel: envOr("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image"),
+		MaxIters:         envInt("PARALLAX_MAX_ITERS", DefaultMaxIters),
+		FFmpegBin:        envOr("FFMPEG_BIN", "ffmpeg"),
+		FFprobeBin:       envOr("FFPROBE_BIN", "ffprobe"),
+		LLMs:             LoadLLMProfiles(),
 		Embedding: Embedding{
 			BaseURL: strings.TrimRight(strings.TrimSpace(os.Getenv("EMBEDDING_BASE_URL")), "/"),
 			APIKey:  strings.TrimSpace(os.Getenv("EMBEDDING_API_KEY")),

@@ -21,20 +21,23 @@ import (
 type ProviderFactory func(cfg config.LLM) llm.ChatProvider
 
 type Server struct {
-	Addr         string
-	Settings     *config.Store
-	Sessions     *agent.Store
-	Tools        *tools.Registry
-	SystemPrompt string
-	ExaAPIKey    string
-	ExaBaseURL   string
-	Bins         ffmpeg.Bins
-	Projects     *projects.Store
-	NewLLM       ProviderFactory
-	MaxIters     int
-	Logger       *slog.Logger
-	Workspace    string
-	Indexer      *transcript.Indexer
+	Addr             string
+	Settings         *config.Store
+	Sessions         *agent.Store
+	Tools            *tools.Registry
+	SystemPrompt     string
+	ExaAPIKey        string
+	ExaBaseURL       string
+	GeminiAPIKey     string
+	GeminiBaseURL    string
+	GeminiImageModel string
+	Bins             ffmpeg.Bins
+	Projects         *projects.Store
+	NewLLM           ProviderFactory
+	MaxIters         int
+	Logger           *slog.Logger
+	Workspace        string
+	Indexer          *transcript.Indexer
 }
 
 func (s *Server) indexMedia(projectID, rel string) {
@@ -198,6 +201,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			OnApplied:  func(rel string) { s.indexMedia(projectID, rel) },
 		})
 		tools.RegisterWeb(toolRegistry, tools.WebEnv{APIKey: s.ExaAPIKey, BaseURL: s.ExaBaseURL})
+		tools.RegisterImage(toolRegistry, tools.ImageEnv{
+			Workspace:  project.Dir,
+			APIKey:     s.GeminiAPIKey,
+			BaseURL:    s.GeminiBaseURL,
+			Model:      s.GeminiImageModel,
+			OnMutation: timelineTx.MarkMediaMutation,
+		})
 		tools.RegisterTimeline(toolRegistry, tools.TimelineEnv{
 			Transaction: timelineTx,
 			Store:       s.Projects,

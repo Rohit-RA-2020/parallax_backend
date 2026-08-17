@@ -20,6 +20,7 @@ Agent loop  (no framework)
     ├── list_workspace / inspect_file / probe_media
     └── run_ffmpeg  →  argv parse → sandbox validate → exec.Command (no shell)
     └── search_web   →  Exa Search API (links + highlights/full page text)
+    └── generate_image →  Gemini image generation (still lands in the project bin)
     └── search_transcript / get_transcript / add_captions  →  Whisper index + timed captions
     │
     ▼
@@ -54,6 +55,21 @@ The server keeps the key private and exposes a `search_web` function to
 Director. It uses Exa's `/search` endpoint, defaults to compact highlights,
 and supports full page text with `content_mode: "text"`. `EXA_BASE_URL` is
 optional and defaults to `https://api.exa.ai`.
+
+To let Director generate stills into the project bin, set `GEMINI_API_KEY`
+(or `GOOGLE_API_KEY`). The server keeps the key private and exposes a
+`generate_image` function. It calls Gemini's Interactions image API
+(`gemini-3.1-flash-image` by default). A text prompt creates a new still.
+Passing `source` (or `images`) sends an existing uploaded or generated
+file with the edit instructions — Gemini's image-to-image path — and
+replaces that bin item in place so the timeline updates. Use
+`apply_to: "none"` to keep a separate variant. Optional overrides:
+
+| Field | Env | Default |
+|-------|-----|---------|
+| API key | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | _(empty)_ |
+| Base URL | `GEMINI_API_BASE` | `https://generativelanguage.googleapis.com/v1beta` |
+| Model | `GEMINI_IMAGE_MODEL` | `gemini-3.1-flash-image` |
 
 If `LLM_MODELS` is unset, the original single-model vars still work:
 
@@ -200,6 +216,7 @@ project fps, source in-points, and media paths (not playback URLs).
 | `restore_project_revision` | Restore a selected revision |
 | `create_project_checkpoint` | Name the state committed by the current request |
 | `search_web` | Search the web through Exa for links, metadata, and page content |
+| `generate_image` | Generate a still with Gemini, or edit an existing uploaded/generated still by sending it back with a prompt |
 | `search_transcript` | English semantic search over this project's speech (optional path filter) |
 | `get_transcript` | Read the timed original + English transcript for one file |
 | `add_captions` | Place a visible C1 caption track from the stored transcript (or burn into the picture) |

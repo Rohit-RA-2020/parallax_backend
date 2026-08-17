@@ -70,6 +70,39 @@ func TestChatPassesThinkingEffort(t *testing.T) {
 	}
 }
 
+func TestChatRegistersGenerateImage(t *testing.T) {
+	var seen llm.Request
+	s := testServer(t, fakeProvider{
+		deltas: []llm.Delta{{Content: "ok", FinishReason: "stop"}},
+		seen:   &seen,
+	})
+	s.GeminiAPIKey = "gemini-test"
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	project, err := s.Projects.Create("Stills")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"project_id":"` + project.ID + `","message":"generate a title card"}`
+	resp, err := http.Post(ts.URL+"/v1/agent/chat", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%s", resp.Status)
+	}
+	names := map[string]bool{}
+	for _, tool := range seen.Tools {
+		names[tool.Function.Name] = true
+	}
+	if !names["generate_image"] {
+		t.Fatalf("tools=%v", names)
+	}
+}
+
 func testServer(t *testing.T, p llm.ChatProvider) *Server {
 	t.Helper()
 	dir := t.TempDir()
