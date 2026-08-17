@@ -2,13 +2,16 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"parallax/internal/ffmpeg"
 	"parallax/internal/projects"
+	"parallax/internal/transcript"
 )
 
 const exportTimeout = 15 * time.Minute
@@ -85,7 +88,12 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 			writeProjectError(w, err)
 			return
 		}
-		args, err = ffmpeg.BuildSequenceArgs(spec, sequenceClips(timeline), planned.Path)
+		clips, err := prepareSequenceCaptions(project.Dir, sequenceClips(timeline))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		args, err = ffmpeg.BuildSequenceArgs(spec, clips, planned.Path)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -171,6 +179,12 @@ func sequenceClips(doc projects.Timeline) []ffmpeg.SequenceClip {
 			item.FontSize = clip.Title.FontSize
 			item.Fill = clip.Title.Fill
 		}
+		if clip.Kind == "caption" {
+			item.SubtitlePath = clip.MediaPath
+			if clip.Captions != nil {
+				item.CaptionLang = clip.Captions.Language
+			}
+		}
 		if clip.Playback != nil {
 			item.PlaybackRate = clip.Playback.Rate
 		}
@@ -204,6 +218,57 @@ func sequenceClips(doc projects.Timeline) []ffmpeg.SequenceClip {
 		out = append(out, item)
 	}
 	return out
+}
+
+func prepareSequenceCaptions(workspace string, clips []ffmpeg.SequenceClip) ([]ffmpeg.SequenceClip, error) {
+	out := append([]ffmpeg.SequenceClip(nil), clips...)
+	fonts := map[string]ffmpeg.CaptionFont{}
+	for i := range out {
+		clip := &out[i]
+		if clip.Kind != "caption" || strings.TrimSpace(clip.SubtitlePath) == "" {
+			continue
+		}
+		abs, err := ffmpeg.ResolveInWorkspace(workspace, clip.SubtitlePath)
+		if err != nil {
+			return nil, err
+		}
+		body, err := os.ReadFile(abs)
+		if err != nil {
+			return nil, fmt.Errorf("caption file %s: %w", clip.SubtitlePath, err)
+		}
+		cues := transcript.ParseSRT(string(body))
+		delta := clip.Start - clip.SourceIn
+		cues = transcript.ShiftCues(cues, delta)
+		cues = transcript.ClipCues(cues, clip.Start, clip.Duration)
+		if len(cues) == 0 {
+			clip.SubtitlePath = ""
+			continue
+		}
+		rel := filepath.ToSlash(filepath.Join(".scratch", fmt.Sprintf("export-cap-%d.srt", i)))
+		dest, err := ffmpeg.ResolveInWorkspace(workspace, rel)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(dest, []byte(transcript.WriteSRT(cues)), 0o644); err != nil {
+			return nil, err
+		}
+		clip.SubtitlePath = rel
+		lang := clip.CaptionLang
+		font, ok := fonts[lang]
+		if !ok {
+			font, err = ffmpeg.StageCaptionFont(workspace, lang)
+			if err != nil {
+				return nil, err
+			}
+			fonts[lang] = font
+		}
+		clip.FontName = font.Name
+		clip.FontsDir = font.FontsDir
+	}
+	return out, nil
 }
 
 func downloadQuery(contentURL string) string {

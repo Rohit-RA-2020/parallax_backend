@@ -26,15 +26,17 @@ var (
 	allowedTracks = map[string]string{
 		"V1": "video",
 		"V2": "title",
+		"C1": "caption",
 		"A1": "audio",
 		"A2": "audio",
 	}
 
 	allowedMediaTypes = map[string]bool{
-		"":      true,
-		"video": true,
-		"audio": true,
-		"image": true,
+		"":         true,
+		"video":    true,
+		"audio":    true,
+		"image":    true,
+		"subtitle": true,
 	}
 )
 
@@ -104,6 +106,13 @@ type TimelineTitle struct {
 	Background  string  `json:"background,omitempty"`
 }
 
+// TimelineCaptions points a C1 clip at a timed subtitle file. Cue times are
+// source-media seconds so they stay correct when the linked video is trimmed.
+type TimelineCaptions struct {
+	Language string `json:"language,omitempty"`
+	Source   string `json:"source,omitempty"`
+}
+
 type TimelineKeyframe struct {
 	Property string  `json:"property"`
 	Frame    int     `json:"frame"`
@@ -140,6 +149,7 @@ type TimelineClip struct {
 	Audio                *TimelineAudio     `json:"audio,omitempty"`
 	Grade                *TimelineColor     `json:"grade,omitempty"`
 	Title                *TimelineTitle     `json:"title,omitempty"`
+	Captions             *TimelineCaptions  `json:"captions,omitempty"`
 	Keyframes            []TimelineKeyframe `json:"keyframes,omitempty"`
 }
 
@@ -452,19 +462,30 @@ func normalizeClip(clip TimelineClip) (TimelineClip, error) {
 	if clip.Grade != nil && (clip.Grade.Exposure < -5 || clip.Grade.Exposure > 5 || clip.Grade.Contrast < -1 || clip.Grade.Contrast > 1 || clip.Grade.Saturation < -1 || clip.Grade.Saturation > 3 || clip.Grade.Temperature < -1 || clip.Grade.Temperature > 1 || clip.Grade.Tint < -1 || clip.Grade.Tint > 1) {
 		return TimelineClip{}, fmt.Errorf("%w: clip %q has invalid grade", ErrInvalidTimeline, clip.ID)
 	}
-	if clip.Kind == "title" {
+	if clip.Kind == "title" || clip.Kind == "caption" {
 		if clip.Title == nil {
 			clip.Title = &TimelineTitle{Text: clip.Name}
 		}
 		if clip.Transform == nil {
-			clip.Transform = &TimelineTransform{X: 960, Y: 96, AnchorX: .5, ScaleX: 1, ScaleY: 1, Opacity: 1}
+			if clip.Kind == "caption" {
+				clip.Transform = &TimelineTransform{X: 960, Y: 1000, AnchorX: .5, AnchorY: 1, ScaleX: 1, ScaleY: 1, Opacity: 1}
+			} else {
+				clip.Transform = &TimelineTransform{X: 960, Y: 96, AnchorX: .5, ScaleX: 1, ScaleY: 1, Opacity: 1}
+			}
 		}
 		clip.Title.Text = strings.TrimSpace(clip.Title.Text)
 		if clip.Title.Text == "" {
+			clip.Title.Text = clip.Name
+		}
+		if clip.Kind == "title" && clip.Title.Text == "" {
 			return TimelineClip{}, fmt.Errorf("%w: title %q text is required", ErrInvalidTimeline, clip.ID)
 		}
 		if clip.Title.FontSize == 0 {
-			clip.Title.FontSize = 64
+			if clip.Kind == "caption" {
+				clip.Title.FontSize = 36
+			} else {
+				clip.Title.FontSize = 64
+			}
 		}
 		if clip.Title.FontSize < 4 || clip.Title.FontSize > 1000 {
 			return TimelineClip{}, fmt.Errorf("%w: title %q has invalid font size", ErrInvalidTimeline, clip.ID)
@@ -474,6 +495,22 @@ func normalizeClip(clip TimelineClip) (TimelineClip, error) {
 		}
 		if !validColor(clip.Title.Fill) {
 			return TimelineClip{}, fmt.Errorf("%w: title %q has invalid fill", ErrInvalidTimeline, clip.ID)
+		}
+		if clip.Kind == "caption" {
+			if clip.MediaType == "" {
+				clip.MediaType = "subtitle"
+			}
+			if clip.Color == "" {
+				clip.Color = colorCaption
+			}
+			if clip.Captions != nil {
+				clip.Captions.Language = strings.TrimSpace(clip.Captions.Language)
+				path, err := sanitizeMediaPath(clip.Captions.Source)
+				if err != nil {
+					return TimelineClip{}, fmt.Errorf("%w: caption %q %v", ErrInvalidTimeline, clip.ID, err)
+				}
+				clip.Captions.Source = path
+			}
 		}
 	}
 	for i := range clip.Keyframes {

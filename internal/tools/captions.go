@@ -11,20 +11,21 @@ import (
 
 	"parallax/internal/ffmpeg"
 	"parallax/internal/llm"
+	"parallax/internal/projects"
 	"parallax/internal/transcript"
 )
 
 func (e TranscriptEnv) registerCaptions(reg *Registry) {
 	reg.Register(llm.NewFunctionTool(
 		"add_captions",
-		"Add timed captions to a video from the stored transcript. Use this instead of writing SRT or ffmpeg subtitle filters by hand. language: original (spoken language), en, or another language code. style: soft (default, movable subtitle track) or burn (drawn into the picture). Requires the file to be transcribed first.",
+		"Put timed captions on the timeline from the stored transcript so they appear in the program monitor and on sequence export. Use this instead of writing SRT, remuxing mov_text, or inventing a subtitles= ffmpeg filter. language: original (spoken language), en, or another language name/code such as hi, hindi, es, ja. style: soft (default — visible C1 caption track) or burn (drawn into the picture). Requires the file to be transcribed first.",
 		json.RawMessage(`{
 			"type":"object",
 			"properties":{
 				"path":{"type":"string","description":"Workspace video path such as media/talk.mp4"},
-				"language":{"type":"string","description":"original, en, or a language name/code such as hi, es, ja"},
-				"style":{"type":"string","enum":["soft","burn"],"description":"soft remuxes a subtitle track; burn draws captions into the video"},
-				"apply_to":{"type":"string","description":"File to update in place. Omit to update path. Set none to keep a new file plus the .srt."}
+				"language":{"type":"string","description":"original, en, or a language name/code such as hi, hindi, es, ja"},
+				"style":{"type":"string","enum":["soft","burn"],"description":"soft places a visible C1 caption track; burn draws captions into the video picture"},
+				"apply_to":{"type":"string","description":"Only used with style burn. File to update in place. Omit to update path. Set none to keep a new burned file."}
 			},
 			"required":["path"]
 		}`),
@@ -79,10 +80,14 @@ func (e TranscriptEnv) addCaptions(ctx context.Context, raw json.RawMessage) Res
 
 	langTag := mode
 	if langTag == "original" {
-		langTag = firstNonEmpty(doc.Language, "und")
+		langTag = firstNonEmpty(transcript.NormalizeCaptionLang(doc.Language), "und")
 	}
-	base := strings.TrimSuffix(filepath.Base(rel), filepath.Ext(rel))
-	srtRel := filepath.ToSlash(filepath.Join(filepath.Dir(rel), base+"."+safeLangFile(langTag)+".srt"))
+	langTag = transcript.NormalizeCaptionLang(langTag)
+	if langTag == "" {
+		langTag = "und"
+	}
+	label := transcript.CaptionLanguageName(langTag) + " captions"
+	srtRel := captionSRTRel(rel, langTag)
 	scratchSRT := filepath.ToSlash(filepath.Join(".scratch", "captions.srt"))
 	srtBody := transcript.WriteSRT(cues)
 	if err := writeWorkspaceFile(e.Workspace, srtRel, srtBody); err != nil {
@@ -92,46 +97,188 @@ func (e TranscriptEnv) addCaptions(ctx context.Context, raw json.RawMessage) Res
 		return Result{OK: false, Error: err.Error()}
 	}
 
-	applyTo := strings.TrimSpace(in.ApplyTo)
-	if applyTo == "" {
-		applyTo = rel
+	if style == "soft" {
+		return e.placeSoftCaptions(rel, srtRel, langTag, label, cues)
 	}
-	keepNew := strings.EqualFold(applyTo, "none") || applyTo == "-"
+	return e.burnCaptions(ctx, in.ApplyTo, rel, srtRel, scratchSRT, langTag, label, cues)
+}
+
+func (e TranscriptEnv) placeSoftCaptions(videoRel, srtRel, langTag, label string, cues []transcript.Cue) Result {
+	if e.Transaction == nil {
+		return Result{OK: false, Error: "timeline is unavailable; cannot place visible captions"}
+	}
+	timeline := e.Transaction.Get()
+	ops, created, playhead := captionTimelineOps(timeline, videoRel, srtRel, langTag, label, cues)
+	if len(ops) == 0 {
+		return Result{OK: false, Error: "could not place captions on the timeline"}
+	}
+	result, err := e.Transaction.Apply(ops)
+	if err != nil {
+		return Result{OK: false, Error: err.Error()}
+	}
+	focusID := ""
+	if len(created) > 0 {
+		focusID = created[0]
+	} else if len(result.CreatedIDs) > 0 {
+		focusID = result.CreatedIDs[0]
+	}
+	if focusID != "" {
+		e.Transaction.Focus(focusID, playhead)
+	}
+	return Result{OK: true, Output: map[string]any{
+		"path":        videoRel,
+		"applied_to":  videoRel,
+		"srt":         srtRel,
+		"language":    langTag,
+		"style":       "soft",
+		"cues":        len(cues),
+		"track":       "C1",
+		"created_ids": result.CreatedIDs,
+		"removed_ids": result.RemovedIDs,
+		"in_place":    false,
+		"visible":     true,
+		"note":        "Captions are on track C1 and show in the program monitor and sequence export. Do not remux a mov_text stream — the HTML preview cannot display it.",
+	}}
+}
+
+func captionTimelineOps(doc projects.Timeline, videoRel, srtRel, langTag, label string, cues []transcript.Cue) ([]projects.TimelineOperation, []string, int) {
+	fps := doc.FPS
+	if fps < 1 {
+		fps = 24
+	}
+	var remove []string
+	for _, clip := range doc.Clips {
+		if isCaptionFor(clip, videoRel, langTag) {
+			remove = append(remove, clip.ID)
+		}
+	}
+	ops := make([]projects.TimelineOperation, 0, 8)
+	if len(remove) > 0 {
+		ops = append(ops, projects.TimelineOperation{Type: "remove_items", IDs: remove})
+	}
+
+	videos := videoClipsFor(doc, videoRel)
+	if len(videos) == 0 {
+		duration := captionSourceFrames(cues, fps)
+		videos = []projects.TimelineClip{{
+			Name:                 label,
+			Track:                "V1",
+			Kind:                 "video",
+			StartFrame:           0,
+			DurationFrames:       duration,
+			SourceInFrame:        0,
+			SourceDurationFrames: duration,
+			MediaPath:            videoRel,
+		}}
+	}
+
+	created := make([]string, 0, len(videos))
+	playhead := 0
+	firstCue := 0.0
+	if len(cues) > 0 {
+		firstCue = cues[0].Start
+	}
+	for i, video := range videos {
+		linkID := projects.EnsureLinkID(&doc, video.ID)
+		if video.ID != "" && linkID != "" && video.LinkID != linkID {
+			updated := video
+			updated.LinkID = linkID
+			ops = append(ops, projects.TimelineOperation{Type: "update_item", Item: &updated})
+			for _, other := range doc.Clips {
+				if other.ID == video.ID || other.LinkID != linkID || other.Kind == "caption" {
+					continue
+				}
+				if other.Kind == "audio" && other.MediaPath == video.MediaPath {
+					audio := other
+					ops = append(ops, projects.TimelineOperation{Type: "update_item", Item: &audio})
+				}
+			}
+			video.LinkID = linkID
+		}
+		item := projects.NewCaptionClip(video, srtRel, langTag, label)
+		ops = append(ops, projects.TimelineOperation{Type: "add_item", Item: &item})
+		created = append(created, item.ID)
+		if i == 0 {
+			frame := video.StartFrame + projects.SecondsToFrames(firstCue, fps) - video.SourceInFrame
+			if frame < video.StartFrame {
+				frame = video.StartFrame
+			}
+			if frame >= video.StartFrame+video.DurationFrames {
+				frame = video.StartFrame
+			}
+			playhead = frame
+		}
+	}
+	return ops, created, playhead
+}
+
+func videoClipsFor(doc projects.Timeline, videoRel string) []projects.TimelineClip {
+	want := filepath.ToSlash(strings.TrimSpace(videoRel))
+	var out []projects.TimelineClip
+	for _, clip := range doc.Clips {
+		if clip.Kind != "video" {
+			continue
+		}
+		if filepath.ToSlash(clip.MediaPath) == want {
+			out = append(out, clip)
+		}
+	}
+	return out
+}
+
+func isCaptionFor(clip projects.TimelineClip, videoRel, _ string) bool {
+	if clip.Kind != "caption" && clip.Track != "C1" {
+		return false
+	}
+	want := filepath.ToSlash(strings.TrimSpace(videoRel))
+	if clip.Captions != nil && filepath.ToSlash(clip.Captions.Source) != "" {
+		return filepath.ToSlash(clip.Captions.Source) == want
+	}
+	return false
+}
+
+func captionSourceFrames(cues []transcript.Cue, fps int) int {
+	end := 0.0
+	for _, cue := range cues {
+		if cue.End > end {
+			end = cue.End
+		}
+	}
+	if end <= 0 {
+		end = 5
+	}
+	return projects.SecondsToFrames(end, fps)
+}
+
+func captionSRTRel(videoRel, langTag string) string {
+	base := strings.TrimSuffix(filepath.Base(videoRel), filepath.Ext(videoRel))
+	stem := safeFileStem(base)
+	return filepath.ToSlash(filepath.Join(".parallax", "captions", stem+"."+safeLangFile(langTag)+".srt"))
+}
+
+func (e TranscriptEnv) burnCaptions(ctx context.Context, applyTo, rel, srtRel, scratchSRT, langTag, label string, cues []transcript.Cue) Result {
+	apply := strings.TrimSpace(applyTo)
+	if apply == "" {
+		apply = rel
+	}
+	keepNew := strings.EqualFold(apply, "none") || apply == "-"
 	ext := strings.ToLower(filepath.Ext(rel))
 	if ext == "" {
 		ext = ".mp4"
 	}
-
-	var args []string
-	switch style {
-	case "burn":
-		args = []string{"-y", "-i", rel, "-vf", "subtitles=" + scratchSRT, "-c:v", "libx264", "-c:a", "copy"}
-	default:
-		if ext == ".webm" || ext == ".gif" {
-			return Result{OK: false, Error: "soft captions are not supported on " + ext + "; use style burn"}
-		}
-		codec := "mov_text"
-		if ext == ".mkv" {
-			codec = "srt"
-		}
-		args = []string{
-			"-y", "-i", rel, "-i", scratchSRT,
-			"-map", "0", "-map", "1",
-			"-c", "copy", "-c:s", codec,
-			"-metadata:s:s:0", "language=" + safeLangFile(langTag),
-		}
+	base := strings.TrimSuffix(filepath.Base(rel), filepath.Ext(rel))
+	filter, err := ffmpeg.SubtitleFilter(e.Workspace, scratchSRT, langTag)
+	if err != nil {
+		return Result{OK: false, Error: err.Error()}
 	}
-
-	outRel := applyTo
-	runArgs := args
+	args := []string{"-y", "-i", rel, "-vf", filter, "-c:v", "libx264", "-c:a", "copy"}
+	outRel := apply
 	if !keepNew {
 		outRel = filepath.ToSlash(filepath.Join(".scratch", fmt.Sprintf("caption-%d%s", time.Now().UnixNano(), ext)))
-		runArgs = append(append([]string{}, args...), outRel)
 	} else {
 		outRel = filepath.ToSlash(filepath.Join(filepath.Dir(rel), base+"."+safeLangFile(langTag)+".captioned"+ext))
-		runArgs = append(append([]string{}, args...), outRel)
 	}
-
+	runArgs := append(append([]string{}, args...), outRel)
 	cmd, err := ffmpeg.Validate(runArgs, ffmpeg.ValidateOpts{Workspace: e.Workspace})
 	if err != nil {
 		return Result{OK: false, Error: "invalid caption command: " + err.Error()}
@@ -142,34 +289,35 @@ func (e TranscriptEnv) addCaptions(ctx context.Context, raw json.RawMessage) Res
 			"stderr":   trimOutput(res.Stderr, 12<<10),
 			"srt":      srtRel,
 			"language": langTag,
-			"style":    style,
+			"style":    "burn",
 		}}
 	}
 	applied := outRel
 	if !keepNew {
-		if err := replaceWorkspaceFile(e.Workspace, outRel, applyTo); err != nil {
+		if err := replaceWorkspaceFile(e.Workspace, outRel, apply); err != nil {
 			return Result{OK: false, Error: "applied captions failed: " + err.Error()}
 		}
-		applied = applyTo
+		applied = apply
 		if e.OnMutation != nil {
 			e.OnMutation()
 		}
 		if e.OnApplied != nil {
-			e.OnApplied(applyTo)
+			e.OnApplied(apply)
 		}
 	} else if e.OnMutation != nil {
 		e.OnMutation()
 	}
-
 	return Result{OK: true, Output: map[string]any{
 		"path":       rel,
 		"applied_to": applied,
 		"srt":        srtRel,
 		"language":   langTag,
-		"style":      style,
+		"style":      "burn",
 		"cues":       len(cues),
+		"label":      label,
 		"in_place":   !keepNew,
-		"note":       "Captions come from the stored transcript timings. Soft keeps a subtitle track; burn draws them into the picture.",
+		"visible":    true,
+		"note":       "Captions are burned into the picture. Play the video to see them. Prefer style soft unless the user asked to burn them in.",
 	}}
 }
 
@@ -191,6 +339,34 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+func safeFileStem(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "captions"
+	}
+	var b strings.Builder
+	lastDash := false
+	for _, r := range strings.ToLower(name) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash && b.Len() > 0 {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	s := strings.Trim(b.String(), "-")
+	if s == "" {
+		return "captions"
+	}
+	if len(s) > 48 {
+		s = s[:48]
+	}
+	return strings.Trim(s, "-")
 }
 
 func safeLangFile(lang string) string {

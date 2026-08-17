@@ -140,6 +140,50 @@ func TestTimelineRejectsInvalid(t *testing.T) {
 	}
 }
 
+func TestCaptionClipPersistsOnC1(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := store.Create("Caps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := store.SaveTimeline(p.ID, Timeline{
+		FPS: 24,
+		Clips: []TimelineClip{
+			{
+				ID:             "clip-v",
+				Name:           "Talk",
+				Track:          "V1",
+				Kind:           "video",
+				DurationFrames: 48,
+				MediaPath:      "media/talk.mp4",
+				LinkID:         "link-1",
+			},
+			NewCaptionClip(TimelineClip{
+				Name: "Talk", Track: "V1", Kind: "video",
+				DurationFrames: 48, MediaPath: "media/talk.mp4", LinkID: "link-1",
+			}, ".parallax/captions/talk.hi.srt", "hi", "Hindi captions"),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var caption TimelineClip
+	for _, clip := range saved.Clips {
+		if clip.Kind == "caption" {
+			caption = clip
+		}
+	}
+	if caption.Track != "C1" || caption.MediaType != "subtitle" || caption.Captions == nil || caption.Captions.Language != "hi" {
+		t.Fatalf("caption=%+v", caption)
+	}
+	if caption.LinkID != "link-1" {
+		t.Fatalf("link=%s", caption.LinkID)
+	}
+}
+
 func TestPlaceMediaClipsSplitsLinkedAudio(t *testing.T) {
 	clips := PlaceMediaClips(MediaLayout{
 		Path:                 "media/sample-5s.mp4",

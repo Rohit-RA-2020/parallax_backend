@@ -34,4 +34,19 @@ func TestWriteSRTAndCaptionLanguage(t *testing.T) {
 	if !strings.Contains(srt, "00:00:04,120 --> 00:00:06,080") || !strings.Contains(srt, "धन्यवाद आने के लिए") {
 		t.Fatalf("srt=%s", srt)
 	}
+	parsed := ParseSRT(srt)
+	if len(parsed) != 2 || parsed[0].Start != 4.12 || parsed[1].Text != "आओ" {
+		t.Fatalf("parsed=%+v", parsed)
+	}
+	shifted := ShiftCues(parsed, 10)
+	if shifted[0].Start < 14.11 || shifted[0].Start > 14.13 {
+		t.Fatalf("shifted=%+v", shifted)
+	}
+	clipped := ClipCues(shifted, 10, 5)
+	if len(clipped) != 1 {
+		t.Fatalf("clipped=%+v", clipped)
+	}
+	if NormalizeCaptionLang("hindi") != "hi" || CaptionLanguageName("hi") != "Hindi" {
+		t.Fatal("language alias")
+	}
 }

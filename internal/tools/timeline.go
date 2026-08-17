@@ -252,7 +252,7 @@ func (e TimelineEnv) placementOps(ctx context.Context, doc projects.Timeline, op
 }
 
 func (e TimelineEnv) completeAddItem(ctx context.Context, doc projects.Timeline, op projects.TimelineOperation, batch []projects.TimelineOperation) (projects.TimelineOperation, *projects.TimelineOperation) {
-	if op.Item == nil || strings.TrimSpace(op.Item.MediaPath) == "" || op.Item.Kind == "title" || op.Item.Track == "V2" {
+	if op.Item == nil || strings.TrimSpace(op.Item.MediaPath) == "" || op.Item.Kind == "title" || op.Item.Kind == "caption" || op.Item.Track == "V2" || op.Item.Track == "C1" {
 		return op, nil
 	}
 	rel, info, err := e.probePlacement(ctx, op.Item.MediaPath)

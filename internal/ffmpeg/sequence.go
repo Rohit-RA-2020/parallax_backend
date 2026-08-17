@@ -45,6 +45,10 @@ type SequenceClip struct {
 	FadeOut      float64
 	FadeColor    string
 	CrossfadeIn  bool
+	SubtitlePath string
+	CaptionLang  string
+	FontName     string
+	FontsDir     string
 }
 
 type SequenceKeyframe struct {
@@ -97,6 +101,7 @@ func BuildSequenceArgs(spec ExportSpec, clips []SequenceClip, dest string) ([]st
 	pictures := pictureClips(clips)
 	audios := audioClips(clips)
 	titles := titleClips(clips)
+	captions := captionClips(clips)
 	wantAudio := spec.Audio && spec.Format != "gif"
 	if spec.Format == "mp3" {
 		wantAudio = true
@@ -262,6 +267,15 @@ func BuildSequenceArgs(spec ExportSpec, clips []SequenceClip, dest string) ([]st
 				cur, text, fill, formatSeconds(fontSize), ch, xexpr, yexpr, opacityExpression(clip, fps), formatSeconds(clip.Start), formatSeconds(clip.Start+clip.Duration), out))
 			cur = out
 		}
+		for i, clip := range captions {
+			if strings.TrimSpace(clip.SubtitlePath) == "" {
+				continue
+			}
+			out := fmt.Sprintf("cap%d", i)
+			filter := subtitleFilter(clip.SubtitlePath, CaptionFont{Name: clip.FontName, FontsDir: clip.FontsDir})
+			filters = append(filters, fmt.Sprintf("[%s]%s[%s]", cur, filter, out))
+			cur = out
+		}
 		if !strings.Contains(cur, ":") {
 			videoOut = cur
 		} else {
@@ -413,6 +427,16 @@ func titleClips(clips []SequenceClip) []SequenceClip {
 	var out []SequenceClip
 	for _, clip := range clips {
 		if clip.Kind == "title" {
+			out = append(out, clip)
+		}
+	}
+	return out
+}
+
+func captionClips(clips []SequenceClip) []SequenceClip {
+	var out []SequenceClip
+	for _, clip := range clips {
+		if clip.Kind == "caption" && strings.TrimSpace(clip.SubtitlePath) != "" {
 			out = append(out, clip)
 		}
 	}

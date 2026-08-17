@@ -8,17 +8,19 @@ import (
 
 	"parallax/internal/ffmpeg"
 	"parallax/internal/llm"
+	"parallax/internal/projects"
 	"parallax/internal/transcript"
 )
 
 // TranscriptEnv is the Director search/read surface for imported speech.
 type TranscriptEnv struct {
-	Indexer    *transcript.Indexer
-	ProjectID  string
-	Workspace  string
-	Bins       ffmpeg.Bins
-	OnMutation func()
-	OnApplied  func(rel string)
+	Indexer     *transcript.Indexer
+	ProjectID   string
+	Workspace   string
+	Bins        ffmpeg.Bins
+	Transaction *projects.TimelineTransaction
+	OnMutation  func()
+	OnApplied   func(rel string)
 }
 
 func RegisterTranscript(reg *Registry, env TranscriptEnv) {

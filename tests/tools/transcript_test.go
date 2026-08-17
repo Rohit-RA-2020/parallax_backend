@@ -3,11 +3,9 @@ package tools_test
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
-	"parallax/internal/ffmpeg"
 	"parallax/internal/projects"
 	"parallax/internal/qdrant"
 	"parallax/internal/tools"
@@ -75,13 +73,7 @@ func TestSearchTranscriptRequiresQuery(t *testing.T) {
 	}
 }
 
-func TestAddCaptionsWritesSoftTrack(t *testing.T) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg not installed")
-	}
-	if _, err := exec.LookPath("ffprobe"); err != nil {
-		t.Skip("ffprobe not installed")
-	}
+func TestAddCaptionsPlacesVisibleTimelineTrack(t *testing.T) {
 	store, err := projects.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -94,9 +86,8 @@ func TestAddCaptionsWritesSoftTrack(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("ffmpeg", "-y", "-f", "lavfi", "-i", "sine=f=440:d=1", "-f", "lavfi", "-i", "color=c=black:s=32x32:d=1", "-shortest", "-pix_fmt", "yuv420p", src)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("ffmpeg: %v\n%s", err, out)
+	if err := os.WriteFile(src, []byte("not-a-real-video"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	hash, err := projects.HashFile(src)
 	if err != nil {
@@ -110,18 +101,111 @@ func TestAddCaptionsWritesSoftTrack(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	tx, err := store.BeginTimelineTransaction(project.ID, projects.CommitMeta{Actor: "agent", Summary: "Add captions"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Apply([]projects.TimelineOperation{{
+		Type: "add_item",
+		Item: &projects.TimelineClip{
+			Name: "talk", Track: "V1", Kind: "video",
+			StartFrame: 0, DurationFrames: 24, SourceDurationFrames: 24,
+			MediaPath: "media/talk.mp4", MediaType: "video",
+		},
+	}}); err != nil {
+		t.Fatal(err)
+	}
 	reg := tools.NewRegistry()
 	tools.RegisterTranscript(reg, tools.TranscriptEnv{
-		Indexer:   &transcript.Indexer{Projects: store},
-		ProjectID: project.ID,
-		Workspace: project.Dir,
-		Bins:      ffmpeg.Bins{FFmpeg: "ffmpeg", FFprobe: "ffprobe"},
+		Indexer:     &transcript.Indexer{Projects: store},
+		ProjectID:   project.ID,
+		Workspace:   project.Dir,
+		Transaction: tx,
 	})
 	res := reg.Execute(context.Background(), "add_captions", `{"path":"media/talk.mp4","language":"en","style":"soft"}`)
 	if !res.OK {
 		t.Fatal(res.Error)
 	}
-	if _, err := os.Stat(filepath.Join(project.Dir, "media", "talk.en.srt")); err != nil {
+	if _, err := os.Stat(filepath.Join(project.Dir, "media", "talk.en.srt")); !os.IsNotExist(err) {
+		t.Fatal("soft captions must not drop an SRT into the media bin")
+	}
+	matches, _ := filepath.Glob(filepath.Join(project.Dir, ".parallax", "captions", "*.srt"))
+	if len(matches) != 1 {
+		t.Fatalf("expected one hidden caption file, got %v", matches)
+	}
+	doc := tx.Get()
+	var captions []projects.TimelineClip
+	for _, clip := range doc.Clips {
+		if clip.Kind == "caption" {
+			captions = append(captions, clip)
+		}
+	}
+	if len(captions) != 1 || captions[0].Track != "C1" || captions[0].MediaType != "subtitle" {
+		t.Fatalf("captions=%+v", captions)
+	}
+	if captions[0].Captions == nil || captions[0].Captions.Source != "media/talk.mp4" {
+		t.Fatalf("caption meta=%+v", captions[0].Captions)
+	}
+	out, ok := res.Output.(map[string]any)
+	if !ok || out["visible"] != true || out["track"] != "C1" {
+		t.Fatalf("output=%#v", res.Output)
+	}
+}
+
+func TestAddCaptionsReplacesPreviousTrack(t *testing.T) {
+	store, err := projects.NewStore(t.TempDir())
+	if err != nil {
 		t.Fatal(err)
+	}
+	project, err := store.Create("Caps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(project.Dir, "media", "talk.mp4")
+	if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := projects.HashFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transcript.Save(project.Dir, &transcript.Document{
+		ContentHash: hash,
+		Path:        "media/talk.mp4",
+		Language:    "en",
+		Segments:    []transcript.Segment{{Start: 0, End: 1, Text: "Hello", TextEN: "Hello"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := store.BeginTimelineTransaction(project.ID, projects.CommitMeta{Actor: "agent", Summary: "Add captions"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	tools.RegisterTranscript(reg, tools.TranscriptEnv{
+		Indexer:     &transcript.Indexer{Projects: store},
+		ProjectID:   project.ID,
+		Workspace:   project.Dir,
+		Transaction: tx,
+	})
+	first := reg.Execute(context.Background(), "add_captions", `{"path":"media/talk.mp4","language":"en"}`)
+	if !first.OK {
+		t.Fatal(first.Error)
+	}
+	second := reg.Execute(context.Background(), "add_captions", `{"path":"media/talk.mp4","language":"en"}`)
+	if !second.OK {
+		t.Fatal(second.Error)
+	}
+	count := 0
+	for _, clip := range tx.Get().Clips {
+		if clip.Kind == "caption" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("caption clips=%d", count)
 	}
 }

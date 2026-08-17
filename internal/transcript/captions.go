@@ -51,18 +51,108 @@ func CaptionCues(doc *Document, language string) ([]Cue, string, error) {
 }
 
 func captionMode(doc *Document, language string) (string, error) {
-	lang := strings.ToLower(strings.TrimSpace(language))
-	src := strings.ToLower(strings.TrimSpace(doc.Language))
+	lang := NormalizeCaptionLang(language)
+	src := NormalizeCaptionLang(doc.Language)
 	switch lang {
 	case "", "original", "source", "auto", "spoken":
 		return "original", nil
-	case "en", "eng", "english":
+	case "en":
 		return "en", nil
 	}
 	if src != "" && (lang == src || strings.HasPrefix(src, lang) || strings.HasPrefix(lang, src)) {
 		return "original", nil
 	}
 	return lang, nil
+}
+
+// NormalizeCaptionLang maps common names to short codes used in filenames.
+func NormalizeCaptionLang(language string) string {
+	lang := strings.ToLower(strings.TrimSpace(language))
+	lang = strings.ReplaceAll(lang, "_", "-")
+	if i := strings.IndexByte(lang, '-'); i > 0 {
+		lang = lang[:i]
+	}
+	switch lang {
+	case "eng", "english":
+		return "en"
+	case "hin", "hindi":
+		return "hi"
+	case "spa", "es", "spanish", "espanol", "español":
+		return "es"
+	case "fra", "fre", "fr", "french", "francais", "français":
+		return "fr"
+	case "deu", "ger", "de", "german", "deutsch":
+		return "de"
+	case "por", "pt", "portuguese", "portugues", "português":
+		return "pt"
+	case "ita", "it", "italian":
+		return "it"
+	case "jpn", "ja", "jp", "japanese":
+		return "ja"
+	case "kor", "ko", "korean":
+		return "ko"
+	case "zho", "chi", "zh", "chinese", "mandarin":
+		return "zh"
+	case "ara", "ar", "arabic":
+		return "ar"
+	case "rus", "ru", "russian":
+		return "ru"
+	case "ben", "bn", "bangla", "bengali":
+		return "bn"
+	case "tam", "ta", "tamil":
+		return "ta"
+	case "tel", "te", "telugu":
+		return "te"
+	case "mar", "mr", "marathi":
+		return "mr"
+	case "urd", "ur", "urdu":
+		return "ur"
+	}
+	return lang
+}
+
+// CaptionLanguageName is a short UI label for a language code.
+func CaptionLanguageName(code string) string {
+	switch NormalizeCaptionLang(code) {
+	case "en":
+		return "English"
+	case "hi":
+		return "Hindi"
+	case "es":
+		return "Spanish"
+	case "fr":
+		return "French"
+	case "de":
+		return "German"
+	case "pt":
+		return "Portuguese"
+	case "it":
+		return "Italian"
+	case "ja":
+		return "Japanese"
+	case "ko":
+		return "Korean"
+	case "zh":
+		return "Chinese"
+	case "ar":
+		return "Arabic"
+	case "ru":
+		return "Russian"
+	case "bn":
+		return "Bengali"
+	case "ta":
+		return "Tamil"
+	case "te":
+		return "Telugu"
+	case "mr":
+		return "Marathi"
+	case "ur":
+		return "Urdu"
+	case "original", "":
+		return "Original"
+	default:
+		return strings.ToUpper(NormalizeCaptionLang(code))
+	}
 }
 
 // TranslateCues rewrites cue text into targetLang, keeping timings.
@@ -139,6 +229,112 @@ func srtTime(sec float64) string {
 	s := ms / 1000
 	ms %= 1000
 	return fmt.Sprintf("%02d:%02d:%02d,%03d", h, m, s, ms)
+}
+
+// ParseSRT reads SubRip cues. Invalid blocks are skipped.
+func ParseSRT(body string) []Cue {
+	body = strings.ReplaceAll(body, "\r\n", "\n")
+	body = strings.ReplaceAll(body, "\r", "\n")
+	blocks := strings.Split(body, "\n\n")
+	var cues []Cue
+	for _, block := range blocks {
+		block = strings.TrimSpace(block)
+		if block == "" {
+			continue
+		}
+		lines := strings.Split(block, "\n")
+		if len(lines) < 2 {
+			continue
+		}
+		idx := 0
+		if _, err := fmt.Sscanf(strings.TrimSpace(lines[0]), "%d", new(int)); err == nil && strings.Contains(lines[1], "-->") {
+			idx = 1
+		}
+		if idx >= len(lines) || !strings.Contains(lines[idx], "-->") {
+			continue
+		}
+		start, end, ok := parseSRTRange(lines[idx])
+		if !ok || end < start {
+			continue
+		}
+		text := strings.TrimSpace(strings.Join(lines[idx+1:], "\n"))
+		if text == "" {
+			continue
+		}
+		cues = append(cues, Cue{Start: start, End: end, Text: text})
+	}
+	return cues
+}
+
+func parseSRTRange(line string) (float64, float64, bool) {
+	parts := strings.Split(line, "-->")
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	start, ok1 := parseSRTStamp(parts[0])
+	end, ok2 := parseSRTStamp(parts[1])
+	return start, end, ok1 && ok2
+}
+
+func parseSRTStamp(s string) (float64, bool) {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexAny(s, " \t"); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.ReplaceAll(s, ",", ".")
+	var h, m int
+	var sec float64
+	if _, err := fmt.Sscanf(s, "%d:%d:%f", &h, &m, &sec); err != nil {
+		return 0, false
+	}
+	if h < 0 || m < 0 || m > 59 || sec < 0 {
+		return 0, false
+	}
+	return float64(h)*3600 + float64(m)*60 + sec, true
+}
+
+// ShiftCues adds delta seconds to every cue. Delta may be negative.
+func ShiftCues(cues []Cue, delta float64) []Cue {
+	if delta == 0 || len(cues) == 0 {
+		return cues
+	}
+	out := make([]Cue, 0, len(cues))
+	for _, cue := range cues {
+		cue.Start += delta
+		cue.End += delta
+		if cue.End <= 0 {
+			continue
+		}
+		if cue.Start < 0 {
+			cue.Start = 0
+		}
+		out = append(out, cue)
+	}
+	return out
+}
+
+// ClipCues keeps cues that overlap [start, start+duration).
+func ClipCues(cues []Cue, start, duration float64) []Cue {
+	end := start + duration
+	if duration <= 0 {
+		return nil
+	}
+	var out []Cue
+	for _, cue := range cues {
+		if cue.End <= start || cue.Start >= end {
+			continue
+		}
+		if cue.Start < start {
+			cue.Start = start
+		}
+		if cue.End > end {
+			cue.End = end
+		}
+		if cue.End > cue.Start {
+			out = append(out, cue)
+		}
+	}
+	return out
 }
 
 func wrapCaption(text string) string {

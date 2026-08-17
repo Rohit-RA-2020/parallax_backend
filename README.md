@@ -202,7 +202,7 @@ project fps, source in-points, and media paths (not playback URLs).
 | `search_web` | Search the web through Exa for links, metadata, and page content |
 | `search_transcript` | English semantic search over this project's speech (optional path filter) |
 | `get_transcript` | Read the timed original + English transcript for one file |
-| `add_captions` | Burn or remux timed captions from the stored transcript in a chosen language |
+| `add_captions` | Place a visible C1 caption track from the stored transcript (or burn into the picture) |
 
 ## Tests
 

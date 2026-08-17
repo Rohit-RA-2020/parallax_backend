@@ -9,6 +9,7 @@ import (
 const (
 	colorVideo            = "#8a6a48"
 	colorAudio            = "#3d8f72"
+	colorCaption          = "#5b7c99"
 	defaultStillSeconds   = 5
 	defaultUnknownSeconds = 5
 )

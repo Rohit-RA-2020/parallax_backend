@@ -85,6 +85,30 @@ func TestBuildSequenceArgsCompositesProgram(t *testing.T) {
 	}
 }
 
+func TestBuildSequenceArgsBurnsCaptionTrack(t *testing.T) {
+	args, err := BuildSequenceArgs(ExportSpec{
+		Source:     SequenceSource,
+		Format:     "mp4",
+		Quality:    "draft",
+		Resolution: "1280x720",
+		FPS:        24,
+		Audio:      false,
+	}, []SequenceClip{
+		{Track: "V1", Kind: "video", Path: "media/a.mp4", Start: 0, Duration: 2},
+		{Track: "C1", Kind: "caption", SubtitlePath: ".scratch/export-cap-0.srt", CaptionLang: "hi", Start: 0, Duration: 2},
+	}, "exports/seq.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "subtitles=") || !strings.Contains(joined, "export-cap-0.srt") {
+		t.Fatalf("missing caption burn: %s", joined)
+	}
+	if _, err := Validate(args, ValidateOpts{Workspace: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBuildSequenceArgsRejectsEmpty(t *testing.T) {
 	if _, err := BuildSequenceArgs(ExportSpec{Source: SequenceSource, Format: "mp4"}, nil, "exports/x.mp4"); err == nil {
 		t.Fatal("empty sequence accepted")

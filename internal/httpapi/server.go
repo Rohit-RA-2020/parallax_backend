@@ -206,12 +206,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			Bins:        s.Bins,
 		})
 		tools.RegisterTranscript(toolRegistry, tools.TranscriptEnv{
-			Indexer:    s.Indexer,
-			ProjectID:  projectID,
-			Workspace:  project.Dir,
-			Bins:       s.Bins,
-			OnMutation: timelineTx.MarkMediaMutation,
-			OnApplied:  func(rel string) { s.indexMedia(projectID, rel) },
+			Indexer:     s.Indexer,
+			ProjectID:   projectID,
+			Workspace:   project.Dir,
+			Bins:        s.Bins,
+			Transaction: timelineTx,
+			OnMutation:  timelineTx.MarkMediaMutation,
+			OnApplied:   func(rel string) { s.indexMedia(projectID, rel) },
 		})
 	}
 	if toolRegistry == nil {
