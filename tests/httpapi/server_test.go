@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -18,6 +20,7 @@ import (
 	. "parallax/internal/httpapi"
 	"parallax/internal/llm"
 	"parallax/internal/projects"
+	"parallax/internal/qdrant"
 	"parallax/internal/tools"
 	"parallax/internal/transcript"
 )
@@ -144,6 +147,96 @@ func TestListMediaIncludesTranscriptStatus(t *testing.T) {
 	}
 	if len(listed.Media) != 1 || listed.Media[0].Transcript == nil || listed.Media[0].Transcript.State != transcript.StateTranscribing {
 		t.Fatalf("listed=%+v", listed)
+	}
+}
+
+func TestDeleteProjectRemovesWorkspaceAndIndex(t *testing.T) {
+	s := testServer(t, fakeProvider{})
+	deleted := ""
+	qdrantSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || !strings.Contains(r.URL.Path, "/collections/") {
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		deleted = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"result":true}`))
+	}))
+	defer qdrantSrv.Close()
+	s.Indexer = &transcript.Indexer{
+		Projects: s.Projects,
+		Qdrant:   qdrant.NewClient(qdrantSrv.URL, ""),
+	}
+	s.Indexer.Qdrant.HTTPClient = qdrantSrv.Client()
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/projects", "application/json", strings.NewReader(`{"name":"Demo"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	project, err := s.Projects.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Projects.SaveUpload(created.ID, "talk.mp4", strings.NewReader("video-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	chat, err := s.Projects.CreateChat(created.ID, "Talk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Sessions.Remember(&agent.Session{ID: chat.ID, ProjectID: created.ID})
+	s.Indexer.Mark(created.ID, "media/talk.mp4", transcript.StateReady, "")
+
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/v1/projects/"+created.ID, nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("delete %s %s", resp.Status, raw)
+	}
+	if _, err := s.Projects.Get(created.ID); !errors.Is(err, projects.ErrNotFound) {
+		t.Fatalf("project still listed: %v", err)
+	}
+	if _, err := os.Stat(project.Dir); !os.IsNotExist(err) {
+		t.Fatalf("workspace still exists: %v", err)
+	}
+	if _, ok := s.Sessions.Get(chat.ID); ok {
+		t.Fatal("chat session still in memory")
+	}
+	if len(s.Indexer.Statuses(created.ID)) != 0 {
+		t.Fatalf("index status=%+v", s.Indexer.Statuses(created.ID))
+	}
+	if !strings.Contains(deleted, qdrant.CollectionName(created.ID)) {
+		t.Fatalf("collection path=%q", deleted)
+	}
+
+	resp, err = http.Get(ts.URL + "/v1/projects/" + created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("get after delete status=%s", resp.Status)
+	}
+	req, _ = http.NewRequest(http.MethodDelete, ts.URL+"/v1/projects/"+created.ID, nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("second delete status=%s", resp.Status)
 	}
 }
 

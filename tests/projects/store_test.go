@@ -1,6 +1,7 @@
 package projects_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,6 +100,50 @@ func TestChatsPersistAcrossReload(t *testing.T) {
 	listed, err = reloaded.ListChats(p.ID)
 	if err != nil || len(listed) != 1 || listed[0].ID != first.ID {
 		t.Fatalf("after delete listed=%+v err=%v", listed, err)
+	}
+}
+
+func TestDeleteProjectRemovesWorkspace(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := store.Create("Cut")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveUpload(p.ID, "talk.mp4", strings.NewReader("video")); err != nil {
+		t.Fatal(err)
+	}
+	chat, err := store.CreateChat(p.ID, "Color")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveChatMessages(p.ID, chat.ID, []llm.Message{
+		{Role: llm.RoleUser, Content: "Mute the highway"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dir := p.Dir
+	if err := store.Delete(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(p.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("get after delete: %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("workspace still exists: %v", err)
+	}
+	reloaded, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reloaded.Get(p.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("reloaded get: %v", err)
+	}
+	if err := store.Delete(p.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second delete: %v", err)
 	}
 }
 

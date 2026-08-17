@@ -3,6 +3,7 @@ package agent
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"strings"
 	"sync"
 	"time"
 
@@ -69,6 +70,21 @@ func (s *Store) Delete(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.data, id)
+}
+
+// DeleteProject drops every in-memory session that belongs to a project.
+func (s *Store) DeleteProject(projectID string) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, sess := range s.data {
+		if sess != nil && sess.ProjectID == projectID {
+			delete(s.data, id)
+		}
+	}
 }
 
 func (s *Store) ReplaceMessages(id string, msgs []llm.Message) {

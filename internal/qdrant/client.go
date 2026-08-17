@@ -141,6 +141,25 @@ func (c *Client) DeleteByHash(ctx context.Context, collection, hash string) erro
 	})
 }
 
+// DeleteCollection drops a project's embedding collection. Missing collections are fine.
+func (c *Client) DeleteCollection(ctx context.Context, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	status, body, err := c.do(ctx, http.MethodDelete, "/collections/"+url.PathEscape(name), nil)
+	if err != nil {
+		return err
+	}
+	if status == http.StatusNotFound {
+		return nil
+	}
+	if status >= 300 {
+		return fmt.Errorf("qdrant: delete collection: http %d: %s", status, compact(body))
+	}
+	return nil
+}
+
 func (c *Client) deleteFilter(ctx context.Context, collection string, filter map[string]any) error {
 	status, body, err := c.do(ctx, http.MethodPost, "/collections/"+url.PathEscape(collection)+"/points/delete?wait=true", map[string]any{
 		"filter": filter,

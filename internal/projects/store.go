@@ -295,6 +295,34 @@ func (s *Store) DeleteFile(id, rel string) error {
 	return s.Touch(id)
 }
 
+// Delete removes a project and every file under its workspace: media,
+// transcripts, chats, timeline, history, and exports.
+func (s *Store) Delete(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" || id == "." || id == ".." || strings.ContainsAny(id, `/\`) {
+		return ErrNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.data[id]
+	if !ok {
+		return ErrNotFound
+	}
+	dir := filepath.Clean(p.Dir)
+	want := filepath.Clean(filepath.Join(s.root, id))
+	if dir != want || filepath.Base(dir) != id {
+		return fmt.Errorf("project directory is invalid")
+	}
+	delete(s.data, id)
+	if err := os.RemoveAll(dir); err != nil {
+		if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+			s.data[id] = p
+			return err
+		}
+	}
+	return nil
+}
+
 func writeProject(p Project) error {
 	metaDir := filepath.Join(p.Dir, ".parallax")
 	if err := os.MkdirAll(metaDir, 0o700); err != nil {

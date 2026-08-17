@@ -60,6 +60,24 @@ func TestSearchFiltersPaths(t *testing.T) {
 	}
 }
 
+func TestDeleteCollectionIgnoresMissing(t *testing.T) {
+	var method, path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
+		path = r.URL.Path
+		http.Error(w, "missing", http.StatusNotFound)
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "")
+	c.HTTPClient = srv.Client()
+	if err := c.DeleteCollection(context.Background(), "p_demo"); err != nil {
+		t.Fatal(err)
+	}
+	if method != http.MethodDelete || path != "/collections/p_demo" {
+		t.Fatalf("%s %s", method, path)
+	}
+}
+
 func TestEnsureCollectionCreatesMissing(t *testing.T) {
 	created := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -132,6 +132,7 @@ scoped to that directory for the whole session.
 | `GET` | `/v1/projects` | List persistent projects |
 | `POST` | `/v1/projects` | Create a project with `{"name":"…"}` |
 | `GET` | `/v1/projects/{id}` | Get a project and its media |
+| `DELETE` | `/v1/projects/{id}` | Permanently delete a project, its media, chats, transcripts, and embeddings |
 | `GET` | `/v1/projects/{id}/media` | List uploaded and generated media |
 | `POST` | `/v1/projects/{id}/media` | Upload one or more multipart `files` |
 | `POST` | `/v1/projects/{id}/export` | Render a downloadable file (`mp4`, `mov`, `webm`, `gif`, `mp3`) |

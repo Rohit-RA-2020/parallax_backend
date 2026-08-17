@@ -55,6 +55,10 @@ func (x *Indexer) Mark(projectID, rel, state, errMsg string) {
 	if rel == "" || strings.TrimSpace(state) == "" {
 		return
 	}
+	project, err := x.Projects.Get(projectID)
+	if err != nil {
+		return
+	}
 	st := JobStatus{
 		Path:      rel,
 		State:     state,
@@ -62,11 +66,6 @@ func (x *Indexer) Mark(projectID, rel, state, errMsg string) {
 		UpdatedAt: time.Now().UTC(),
 	}
 	x.setLive(projectID, rel, st)
-
-	project, err := x.Projects.Get(projectID)
-	if err != nil {
-		return
-	}
 	_ = writeStatus(project.Dir, st)
 }
 
@@ -121,6 +120,20 @@ func (x *Indexer) Clear(projectID, rel string) {
 		return
 	}
 	_ = deleteStatus(project.Dir, rel)
+}
+
+func (x *Indexer) clearProject(projectID string) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.live == nil {
+		return
+	}
+	prefix := projectID + "\n"
+	for key := range x.live {
+		if strings.HasPrefix(key, prefix) {
+			delete(x.live, key)
+		}
+	}
 }
 
 // Statuses returns the latest known state for every path in the project.

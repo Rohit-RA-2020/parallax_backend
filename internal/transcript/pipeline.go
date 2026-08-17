@@ -102,6 +102,13 @@ func (x *Indexer) loop() {
 		case job := <-x.queue:
 			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 			if err := x.Index(ctx, job.projectID, job.rel); err != nil {
+				if x.Projects != nil {
+					if _, getErr := x.Projects.Get(job.projectID); getErr != nil {
+						x.clearProject(job.projectID)
+						cancel()
+						continue
+					}
+				}
 				x.Mark(job.projectID, job.rel, StateFailed, err.Error())
 				x.log().Error("index media", "project", job.projectID, "path", job.rel, "err", err)
 			}
@@ -362,6 +369,27 @@ func (x *Indexer) RemovePath(ctx context.Context, projectID, rel string) error {
 		return nil
 	}
 	return x.Qdrant.DeleteByPath(ctx, qdrant.CollectionName(projectID), rel)
+}
+
+// RemoveProject drops live index state and the project's Qdrant collection.
+func (x *Indexer) RemoveProject(ctx context.Context, projectID string) error {
+	if x == nil {
+		return nil
+	}
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return nil
+	}
+	x.clearProject(projectID)
+	if x.Projects != nil {
+		if project, err := x.Projects.Get(projectID); err == nil {
+			_ = saveStatusFile(project.Dir, map[string]JobStatus{})
+		}
+	}
+	if x.Qdrant == nil {
+		return nil
+	}
+	return x.Qdrant.DeleteCollection(ctx, qdrant.CollectionName(projectID))
 }
 
 // Get loads the transcript for the current bytes of a project file.

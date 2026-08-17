@@ -60,6 +60,32 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, projectResponse{Project: p, MediaCount: 0})
 }
 
+func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := s.Projects.Get(id); err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	if chats, err := s.Projects.ListChats(id); err == nil && s.Sessions != nil {
+		for _, chat := range chats {
+			s.Sessions.Delete(chat.ID)
+		}
+	}
+	if s.Sessions != nil {
+		s.Sessions.DeleteProject(id)
+	}
+	if s.Indexer != nil {
+		if err := s.Indexer.RemoveProject(r.Context(), id); err != nil {
+			s.log().Error("delete project index", "project", id, "err", err)
+		}
+	}
+	if err := s.Projects.Delete(id); err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 	p, err := s.Projects.Get(r.PathValue("id"))
 	if err != nil {
