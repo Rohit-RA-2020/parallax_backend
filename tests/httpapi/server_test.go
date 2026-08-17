@@ -541,6 +541,37 @@ func TestChatSSE(t *testing.T) {
 	}
 }
 
+func TestEmptyChatsListIsArray(t *testing.T) {
+	s := testServer(t, fakeProvider{})
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	project, err := s.Projects.Create("Quiet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Get(ts.URL + "/v1/projects/" + project.ID + "/chats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("%s %s", resp.Status, raw)
+	}
+	var listed struct {
+		Chats []struct{} `json:"chats"`
+	}
+	if err := json.Unmarshal(raw, &listed); err != nil {
+		t.Fatal(err)
+	}
+	if listed.Chats == nil {
+		t.Fatalf("chats should be [] not null: %s", raw)
+	}
+	if len(listed.Chats) != 0 {
+		t.Fatalf("listed=%+v", listed)
+	}
+}
+
 func TestProjectChatsPersist(t *testing.T) {
 	s := testServer(t, fakeProvider{deltas: []llm.Delta{
 		{Content: "Muted the clip.", FinishReason: "stop"},

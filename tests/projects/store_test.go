@@ -48,6 +48,27 @@ func TestProjectUploadAndReload(t *testing.T) {
 	}
 }
 
+func TestListChatsEmptyIsNotNil(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := store.Create("Quiet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chats, err := store.ListChats(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chats == nil {
+		t.Fatal("empty chat list should be a slice")
+	}
+	if len(chats) != 0 {
+		t.Fatalf("chats=%+v", chats)
+	}
+}
+
 func TestChatsPersistAcrossReload(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewStore(root)

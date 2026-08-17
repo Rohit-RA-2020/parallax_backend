@@ -258,6 +258,9 @@ func (s *Server) handleListChats(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, err)
 		return
 	}
+	if chats == nil {
+		chats = []projects.ChatMeta{}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"chats": chats})
 }
 

@@ -51,7 +51,7 @@ func (s *Store) ListChats(projectID string) ([]ChatMeta, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := append([]ChatMeta(nil), idx.Chats...)
+	out := append([]ChatMeta{}, idx.Chats...)
 	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
 	return out, nil
 }
