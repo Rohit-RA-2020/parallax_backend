@@ -12,6 +12,9 @@ import (
 type CaptionFont struct {
 	Name     string
 	FontsDir string
+	Size     float64
+	Fill     string
+	Stroke   string
 }
 
 // SubtitleFilter builds a sandboxed subtitles= filter that can render the
@@ -29,7 +32,13 @@ func SubtitleFilter(workspace, srtRel, language string) (string, error) {
 }
 
 func subtitleFilter(srtRel string, font CaptionFont) string {
-	style := "Fontsize=22,Alignment=2,Outline=1.6,Shadow=0.6,MarginV=40,PrimaryColour=&H00FFFFFF&,OutlineColour=&H00000000&"
+	size := font.Size
+	if size <= 0 {
+		size = 32
+	}
+	primary := assColour(font.Fill, "00FFFFFF")
+	outline := assColour(font.Stroke, "00000000")
+	style := fmt.Sprintf("Fontsize=%s,Alignment=2,Outline=1.6,Shadow=0.6,MarginV=36,PrimaryColour=&H%s&,OutlineColour=&H%s&", trimFloat(size), primary, outline)
 	if font.Name != "" {
 		style = "FontName=" + font.Name + "," + style
 	}
@@ -74,6 +83,30 @@ func StageCaptionFont(workspace, language string) (CaptionFont, error) {
 		return CaptionFont{Name: name}, nil
 	}
 	return CaptionFont{Name: name, FontsDir: destDirRel}, nil
+}
+
+func assColour(hex, fallback string) string {
+	hex = strings.TrimPrefix(strings.TrimSpace(hex), "#")
+	if len(hex) == 3 {
+		hex = string([]byte{hex[0], hex[0], hex[1], hex[1], hex[2], hex[2]})
+	}
+	if len(hex) != 6 {
+		return fallback
+	}
+	for i := 0; i < 6; i++ {
+		c := hex[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return fallback
+		}
+	}
+	r, g, b := hex[0:2], hex[2:4], hex[4:6]
+	return "00" + strings.ToUpper(b+g+r)
+}
+
+func trimFloat(v float64) string {
+	s := fmt.Sprintf("%.2f", v)
+	s = strings.TrimRight(s, "0")
+	return strings.TrimRight(s, ".")
 }
 
 func pickCaptionFont(language string) (string, string) {

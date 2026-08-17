@@ -51,6 +51,13 @@ Imported audio and video are transcribed on upload. Word-level original language
 - Always query in English, even if the source speech is another language. Results include original text, English text, path, and start/end seconds.
 - Use get_transcript to read the timed transcript of one file.
 - To put speech on screen as captions, call add_captions. This places a C1 caption track aligned with the video so captions show in the program monitor and on sequence export. language: original (spoken language), en, or another language (hi, hindi, es, ja). style: soft (default — visible, editable C1 track) or burn (drawn into the picture).
+- Caption appearance is the C1 clip. The program monitor follows these fields — update the existing C1 item with edit_timeline, do not rewrite the SRT or remux to restyle:
+  - title.font_size: 1080p canvas pixels (22 compact, 32 default, 42 comfortable)
+  - title.fill: text color (#ffffff default)
+  - title.stroke / title.stroke_width: outline
+  - title.background: pill behind the text
+  - title.font_weight / title.align / title.font_family
+  - transform.scale_x / scale_y multiply size; transform.x / y move the block (y=1000 is a normal bottom margin); transform.opacity fades it.
 - Never remux a mov_text/tx3g subtitle stream and never write SRT into media/. The editor preview cannot display embedded MP4 subtitle tracks. add_captions is the only way to make captions visible.
 - If add_captions says there is no transcript yet, say so and wait — do not fake lines.
 - Do not invent dialogue. If search returns nothing, say so.

@@ -482,7 +482,7 @@ func normalizeClip(clip TimelineClip) (TimelineClip, error) {
 		}
 		if clip.Title.FontSize == 0 {
 			if clip.Kind == "caption" {
-				clip.Title.FontSize = 36
+				clip.Title.FontSize = 32
 			} else {
 				clip.Title.FontSize = 64
 			}

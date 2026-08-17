@@ -25,7 +25,7 @@ func NewCaptionClip(video TimelineClip, srtRel, language, name string) TimelineC
 		Color:                colorCaption,
 		LinkID:               linkID,
 		Transform:            &TimelineTransform{X: 960, Y: 1000, AnchorX: .5, AnchorY: 1, ScaleX: 1, ScaleY: 1, Opacity: 1},
-		Title:                &TimelineTitle{Text: name, FontSize: 36, FontWeight: 600, Align: "center", Fill: "#ffffff"},
+		Title:                &TimelineTitle{Text: name, FontSize: 32, FontWeight: 600, Align: "center", Fill: "#ffffff"},
 		Captions:             &TimelineCaptions{Language: strings.TrimSpace(language), Source: source},
 	}
 }

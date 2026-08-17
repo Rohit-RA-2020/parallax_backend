@@ -49,4 +49,11 @@ func TestWriteSRTAndCaptionLanguage(t *testing.T) {
 	if NormalizeCaptionLang("hindi") != "hi" || CaptionLanguageName("hi") != "Hindi" {
 		t.Fatal("language alias")
 	}
+	if CaptionLangISO6392("hi") != "hin" {
+		t.Fatal("iso639-2")
+	}
+	vtt := WriteVTT(orig)
+	if !strings.HasPrefix(vtt, "WEBVTT") || !strings.Contains(vtt, "00:00:04.120 --> 00:00:06.080") {
+		t.Fatalf("vtt=%s", vtt)
+	}
 }

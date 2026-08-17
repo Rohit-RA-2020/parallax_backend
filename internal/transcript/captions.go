@@ -112,6 +112,54 @@ func NormalizeCaptionLang(language string) string {
 }
 
 // CaptionLanguageName is a short UI label for a language code.
+// CaptionLangISO6392 is the three-letter code players expect on MP4/MOV tracks.
+func CaptionLangISO6392(code string) string {
+	switch NormalizeCaptionLang(code) {
+	case "en":
+		return "eng"
+	case "hi":
+		return "hin"
+	case "es":
+		return "spa"
+	case "fr":
+		return "fra"
+	case "de":
+		return "deu"
+	case "pt":
+		return "por"
+	case "it":
+		return "ita"
+	case "ja":
+		return "jpn"
+	case "ko":
+		return "kor"
+	case "zh":
+		return "zho"
+	case "ar":
+		return "ara"
+	case "ru":
+		return "rus"
+	case "bn":
+		return "ben"
+	case "ta":
+		return "tam"
+	case "te":
+		return "tel"
+	case "mr":
+		return "mar"
+	case "ur":
+		return "urd"
+	case "und", "original", "":
+		return "und"
+	default:
+		lang := NormalizeCaptionLang(code)
+		if len(lang) == 3 {
+			return lang
+		}
+		return lang
+	}
+}
+
 func CaptionLanguageName(code string) string {
 	switch NormalizeCaptionLang(code) {
 	case "en":
@@ -215,6 +263,30 @@ func WriteSRT(cues []Cue) string {
 		fmt.Fprintf(&b, "%d\n%s --> %s\n%s\n", i+1, srtTime(cue.Start), srtTime(cue.End), cue.Text)
 	}
 	return b.String()
+}
+
+// WriteVTT renders cues as WebVTT for WebM soft tracks.
+func WriteVTT(cues []Cue) string {
+	var b strings.Builder
+	b.WriteString("WEBVTT\n")
+	for i, cue := range cues {
+		fmt.Fprintf(&b, "\n%d\n%s --> %s\n%s\n", i+1, vttTime(cue.Start), vttTime(cue.End), cue.Text)
+	}
+	return b.String()
+}
+
+func vttTime(sec float64) string {
+	if sec < 0 {
+		sec = 0
+	}
+	ms := int(sec*1000 + 0.5)
+	h := ms / 3600000
+	ms %= 3600000
+	m := ms / 60000
+	ms %= 60000
+	s := ms / 1000
+	ms %= 1000
+	return fmt.Sprintf("%02d:%02d:%02d.%03d", h, m, s, ms)
 }
 
 func srtTime(sec float64) string {
