@@ -112,8 +112,11 @@ English segment text (plus neighboring segments) is embedded through a
 **separate** OpenAI-compatible embeddings endpoint and upserted into **local
 Qdrant**, one collection per project. Stills take the same path: a vision
 caption is written on upload, generate, or in-place edit, then embedded as
-`kind: "image"` points so they do not mix with speech. Director must query
-in English and may filter by file path.
+`kind: "image"` points so they do not mix with speech. Videos are split on
+visual cuts (with interval samples inside long takes); each shot is captioned
+and stored as `kind: "video_scene"` with start/end times. Overlapping English
+transcript text is attached when speech exists. Director must query in
+English and may filter by file path.
 
 ```bash
 # from parallax_backend/
@@ -225,6 +228,8 @@ project fps, source in-points, and media paths (not playback URLs).
 | `generate_image` | Generate a still with Gemini, or edit an existing uploaded/generated still by sending it back with a prompt |
 | `search_images` | English semantic search over this project's described stills (optional path filter) |
 | `get_image_caption` | Read the stored English description for one still |
+| `search_scenes` | English semantic search over this project's video shots (optional path filter) |
+| `get_video_scenes` | Read stored shot times and descriptions for one video |
 | `search_transcript` | English semantic search over this project's speech (optional path filter) |
 | `get_transcript` | Read the timed original + English transcript for one file |
 | `add_captions` | Place a visible C1 caption track from the stored transcript (or burn into the picture) |

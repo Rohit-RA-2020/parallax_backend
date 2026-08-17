@@ -220,11 +220,11 @@ func (x *Indexer) upsertImage(ctx context.Context, projectID string, doc *ImageC
 		return err
 	}
 	if prev := filepath.ToSlash(strings.TrimSpace(prevPath)); prev != "" && prev != doc.Path {
-		if err := x.Qdrant.DeleteByPath(ctx, collection, prev); err != nil {
+		if err := x.Qdrant.DeleteByPathAndKind(ctx, collection, prev, KindImage, false); err != nil {
 			return err
 		}
 	}
-	if err := x.Qdrant.DeleteByPath(ctx, collection, doc.Path); err != nil {
+	if err := x.Qdrant.DeleteByPathAndKind(ctx, collection, doc.Path, KindImage, false); err != nil {
 		return err
 	}
 	payload := map[string]any{
@@ -360,7 +360,7 @@ func (x *Indexer) GetImage(projectID, rel string) (*ImageCaption, error) {
 
 // SearchImages embeds an English query and returns matching stills.
 func (x *Indexer) SearchImages(ctx context.Context, projectID, query string, paths []string, limit int) ([]qdrant.Hit, error) {
-	return x.search(ctx, projectID, query, paths, KindImage, "", limit)
+	return x.search(ctx, projectID, query, paths, KindImage, nil, limit)
 }
 
 func stillDimensions(data []byte) (int, int) {

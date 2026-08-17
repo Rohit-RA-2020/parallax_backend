@@ -95,6 +95,31 @@ func TestSearchFiltersKind(t *testing.T) {
 	}
 }
 
+func TestDeleteByPathAndKindIncludesEmpty(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/points/delete") {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"result":true}`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "")
+	c.HTTPClient = srv.Client()
+	if err := c.DeleteByPathAndKind(context.Background(), "p_demo", "media/talk.mp4", "transcript", true); err != nil {
+		t.Fatal(err)
+	}
+	must := got["filter"].(map[string]any)["must"].([]any)
+	if must[0].(map[string]any)["key"] != "path" {
+		t.Fatalf("filter=%#v", got["filter"])
+	}
+	if _, ok := must[1].(map[string]any)["should"]; !ok {
+		t.Fatalf("filter=%#v", got["filter"])
+	}
+}
+
 func TestDeleteCollectionIgnoresMissing(t *testing.T) {
 	var method, path string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

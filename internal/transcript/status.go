@@ -70,6 +70,36 @@ func (x *Indexer) Mark(projectID, rel, state, errMsg string) {
 	_ = writeStatus(project.Dir, st)
 }
 
+// MarkCaptionProgress records how many stills or scenes have been described.
+func (x *Indexer) MarkCaptionProgress(projectID, rel string, done, total int) {
+	if x == nil {
+		return
+	}
+	rel = filepath.ToSlash(strings.TrimSpace(rel))
+	if rel == "" {
+		return
+	}
+	if done < 0 {
+		done = 0
+	}
+	progress := ""
+	if total > 0 {
+		progress = fmt.Sprintf("%d / %d", done, total)
+	}
+	st := JobStatus{
+		Path:      rel,
+		State:     StateDescribing,
+		Progress:  progress,
+		UpdatedAt: time.Now().UTC(),
+	}
+	x.setLive(projectID, rel, st)
+	if x.Projects != nil {
+		if project, err := x.Projects.Get(projectID); err == nil {
+			_ = writeStatus(project.Dir, st)
+		}
+	}
+}
+
 // MarkProgress updates live transcribe position without rewriting disk.
 func (x *Indexer) MarkProgress(projectID, rel string, at, duration float64) {
 	if x == nil {

@@ -294,8 +294,14 @@ func TestSearchTranscriptExcludesImages(t *testing.T) {
 	}
 	filter := got["filter"].(map[string]any)
 	mustNot := filter["must_not"].([]any)
-	match := mustNot[0].(map[string]any)["match"].(map[string]any)
-	if match["value"] != KindImage {
+	excluded := map[string]bool{}
+	for _, item := range mustNot {
+		match := item.(map[string]any)["match"].(map[string]any)
+		if value, ok := match["value"].(string); ok {
+			excluded[value] = true
+		}
+	}
+	if !excluded[KindImage] || !excluded[KindVideoScene] {
 		t.Fatalf("filter=%#v", filter)
 	}
 }

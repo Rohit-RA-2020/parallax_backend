@@ -20,6 +20,16 @@ import (
 	. "parallax/internal/transcript"
 )
 
+func firstPayloadKind(points []map[string]any, kind string) map[string]any {
+	for _, point := range points {
+		payload, _ := point["payload"].(map[string]any)
+		if payload["kind"] == kind {
+			return payload
+		}
+	}
+	return nil
+}
+
 type fakeASR struct {
 	result ASRResult
 }
@@ -78,7 +88,7 @@ func TestIndexerWritesTranscriptAndUpsertsEnglishVectors(t *testing.T) {
 				Points []map[string]any `json:"points"`
 			}
 			_ = json.Unmarshal(body, &payload)
-			upserted = payload.Points
+			upserted = append(upserted, payload.Points...)
 			_, _ = w.Write([]byte(`{"result":{"status":"ok"}}`))
 		case r.Method == http.MethodPut:
 			_, _ = w.Write([]byte(`{"result":true}`))
@@ -132,10 +142,10 @@ func TestIndexerWritesTranscriptAndUpsertsEnglishVectors(t *testing.T) {
 	if doc.Segments[0].TextEN != "Thanks" || doc.Words[0].Text != "धन्यवाद" {
 		t.Fatalf("doc=%+v", doc)
 	}
-	if len(upserted) != 1 {
+	payload := firstPayloadKind(upserted, KindTranscript)
+	if payload == nil {
 		t.Fatalf("upserted=%#v", upserted)
 	}
-	payload := upserted[0]["payload"].(map[string]any)
 	if payload["text_en"] != "Thanks" || payload["path"] != "media/talk.mp4" || payload["content_hash"] != hash || payload["kind"] != KindTranscript {
 		t.Fatalf("payload=%#v", payload)
 	}

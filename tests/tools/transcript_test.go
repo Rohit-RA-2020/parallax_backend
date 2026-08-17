@@ -103,6 +103,61 @@ func TestGetImageCaptionReadsSavedDocument(t *testing.T) {
 	}
 }
 
+func TestGetVideoScenesReadsSavedDocument(t *testing.T) {
+	store, err := projects.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := store.Create("Broll")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(project.Dir, "media", "broll.mp4")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := projects.HashFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transcript.SaveVideoScenes(project.Dir, &transcript.VideoScenes{
+		ContentHash: hash,
+		Path:        "media/broll.mp4",
+		Name:        "broll.mp4",
+		Scenes:      []transcript.VideoScene{{ID: "scn-0000", Start: 1, End: 4, At: 1.3, TextEN: "Kitchen wide", SpokenEN: "thanks"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	tools.RegisterTranscript(reg, tools.TranscriptEnv{
+		Indexer:   &transcript.Indexer{Projects: store},
+		ProjectID: project.ID,
+	})
+	res := reg.Execute(context.Background(), "get_video_scenes", `{"path":"media/broll.mp4"}`)
+	if !res.OK {
+		t.Fatal(res.Error)
+	}
+	doc := res.Output.(*transcript.VideoScenes)
+	if len(doc.Scenes) != 1 || doc.Scenes[0].TextEN != "Kitchen wide" {
+		t.Fatalf("doc=%+v", doc)
+	}
+}
+
+func TestSearchScenesRequiresEmbedder(t *testing.T) {
+	reg := tools.NewRegistry()
+	tools.RegisterTranscript(reg, tools.TranscriptEnv{
+		Indexer:   &transcript.Indexer{Qdrant: qdrant.NewClient("http://127.0.0.1:6333", "")},
+		ProjectID: "x",
+	})
+	res := reg.Execute(context.Background(), "search_scenes", `{"query":"kitchen"}`)
+	if res.OK {
+		t.Fatal("expected missing embedder error")
+	}
+}
+
 func TestSearchImagesRequiresEmbedder(t *testing.T) {
 	reg := tools.NewRegistry()
 	tools.RegisterTranscript(reg, tools.TranscriptEnv{

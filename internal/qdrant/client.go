@@ -116,16 +116,36 @@ func (c *Client) Upsert(ctx context.Context, collection string, points []Point) 
 }
 
 func (c *Client) DeleteByPath(ctx context.Context, collection, path string) error {
+	return c.DeleteByPathAndKind(ctx, collection, path, "", false)
+}
+
+// DeleteByPathAndKind removes points for a file. When kind is set, only that
+// payload kind is removed so transcript and video-scene points can share a path.
+// includeEmptyKind also drops legacy points that have no kind field.
+func (c *Client) DeleteByPathAndKind(ctx context.Context, collection, path, kind string, includeEmptyKind bool) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return nil
 	}
-	return c.deleteFilter(ctx, collection, map[string]any{
-		"must": []map[string]any{{
-			"key":   "path",
-			"match": map[string]any{"value": path},
-		}},
-	})
+	must := []map[string]any{{
+		"key":   "path",
+		"match": map[string]any{"value": path},
+	}}
+	kind = strings.TrimSpace(kind)
+	if kind != "" && includeEmptyKind {
+		must = append(must, map[string]any{
+			"should": []map[string]any{
+				{"key": "kind", "match": map[string]any{"value": kind}},
+				{"is_empty": map[string]any{"key": "kind"}},
+			},
+		})
+	} else if kind != "" {
+		must = append(must, map[string]any{
+			"key":   "kind",
+			"match": map[string]any{"value": kind},
+		})
+	}
+	return c.deleteFilter(ctx, collection, map[string]any{"must": must})
 }
 
 func (c *Client) DeleteByHash(ctx context.Context, collection, hash string) error {
@@ -179,10 +199,11 @@ func (c *Client) deleteFilter(ctx context.Context, collection string, filter map
 // SearchOpts narrows a project collection query. Kind and ExcludeKind keep
 // stills and transcript segments from mixing in the same collection.
 type SearchOpts struct {
-	Paths       []string
-	Kind        string
-	ExcludeKind string
-	Limit       int
+	Paths        []string
+	Kind         string
+	ExcludeKind  string
+	ExcludeKinds []string
+	Limit        int
 }
 
 func (c *Client) Search(ctx context.Context, collection string, vector []float32, opts SearchOpts) ([]Hit, error) {
@@ -198,7 +219,7 @@ func (c *Client) Search(ctx context.Context, collection string, vector []float32
 		"limit":        limit,
 		"with_payload": true,
 	}
-	if filter := searchFilter(opts.Paths, opts.Kind, opts.ExcludeKind); filter != nil {
+	if filter := searchFilter(opts.Paths, opts.Kind, opts.ExcludeKind, opts.ExcludeKinds); filter != nil {
 		body["filter"] = filter
 	}
 	status, raw, err := c.do(ctx, http.MethodPost, "/collections/"+url.PathEscape(collection)+"/points/search", body)
@@ -282,9 +303,8 @@ func collectionDim(raw []byte) (int, bool) {
 	return parsed.Result.Config.Params.Vectors.Size, true
 }
 
-func searchFilter(paths []string, kind, excludeKind string) map[string]any {
+func searchFilter(paths []string, kind, excludeKind string, excludeKinds []string) map[string]any {
 	kind = strings.TrimSpace(kind)
-	excludeKind = strings.TrimSpace(excludeKind)
 	cleaned := cleanPaths(paths)
 
 	var must []map[string]any
@@ -295,10 +315,16 @@ func searchFilter(paths []string, kind, excludeKind string) map[string]any {
 			"match": map[string]any{"value": kind},
 		})
 	}
-	if excludeKind != "" {
+	seen := map[string]bool{}
+	for _, item := range append([]string{excludeKind}, excludeKinds...) {
+		item = strings.TrimSpace(item)
+		if item == "" || seen[item] {
+			continue
+		}
+		seen[item] = true
 		mustNot = append(mustNot, map[string]any{
 			"key":   "kind",
-			"match": map[string]any{"value": excludeKind},
+			"match": map[string]any{"value": item},
 		})
 	}
 	switch len(cleaned) {

@@ -92,6 +92,10 @@ func (x *Indexer) Enqueue(projectID, rel string) {
 		if !x.canCaption() {
 			return
 		}
+	case HasVideo(rel):
+		if x.Whisper == nil && !x.canCaption() {
+			return
+		}
 	case hasAudioExt(rel):
 		if x.Whisper == nil {
 			return
@@ -158,9 +162,21 @@ func (x *Indexer) Index(ctx context.Context, projectID, rel string) error {
 	if HasImage(rel) {
 		return x.indexImage(ctx, projectID, rel)
 	}
-	if x.Whisper == nil {
-		return nil
+	var first error
+	if x.Whisper != nil && hasAudioExt(rel) {
+		if err := x.indexSpeech(ctx, projectID, rel); err != nil {
+			first = err
+		}
 	}
+	if x.canCaption() && HasVideo(rel) {
+		if err := x.indexScenes(ctx, projectID, rel); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+func (x *Indexer) indexSpeech(ctx context.Context, projectID, rel string) error {
 	project, err := x.Projects.Get(projectID)
 	if err != nil {
 		return err
@@ -351,7 +367,7 @@ func (x *Indexer) upsert(ctx context.Context, projectID string, doc *Document) e
 	if err := x.Qdrant.EnsureCollection(ctx, collection, len(vectors[0])); err != nil {
 		return err
 	}
-	if err := x.Qdrant.DeleteByPath(ctx, collection, doc.Path); err != nil {
+	if err := x.Qdrant.DeleteByPathAndKind(ctx, collection, doc.Path, KindTranscript, true); err != nil {
 		return err
 	}
 	points := make([]qdrant.Point, 0, len(segs))
@@ -441,15 +457,19 @@ func (x *Indexer) Get(projectID, rel string) (*Document, error) {
 
 // Search embeds an English query and returns matching transcript segments.
 func (x *Indexer) Search(ctx context.Context, projectID, query string, paths []string, limit int) ([]qdrant.Hit, error) {
-	return x.search(ctx, projectID, query, paths, "", KindImage, limit)
+	return x.search(ctx, projectID, query, paths, "", []string{KindImage, KindVideoScene}, limit)
 }
 
-func (x *Indexer) search(ctx context.Context, projectID, query string, paths []string, kind, excludeKind string, limit int) ([]qdrant.Hit, error) {
+func (x *Indexer) search(ctx context.Context, projectID, query string, paths []string, kind string, excludeKinds []string, limit int) ([]qdrant.Hit, error) {
 	if x == nil || x.Embeddings == nil || x.Qdrant == nil {
-		if kind == KindImage {
+		switch kind {
+		case KindImage:
 			return nil, fmt.Errorf("image search is not configured")
+		case KindVideoScene:
+			return nil, fmt.Errorf("scene search is not configured")
+		default:
+			return nil, fmt.Errorf("transcript search is not configured")
 		}
-		return nil, fmt.Errorf("transcript search is not configured")
 	}
 	query = strings.TrimSpace(query)
 	if query == "" {
@@ -463,10 +483,10 @@ func (x *Indexer) search(ctx context.Context, projectID, query string, paths []s
 		return nil, fmt.Errorf("embed: empty query vector")
 	}
 	return x.Qdrant.Search(ctx, qdrant.CollectionName(projectID), vecs[0], qdrant.SearchOpts{
-		Paths:       paths,
-		Kind:        kind,
-		ExcludeKind: excludeKind,
-		Limit:       limit,
+		Paths:        paths,
+		Kind:         kind,
+		ExcludeKinds: excludeKinds,
+		Limit:        limit,
 	})
 }
 
