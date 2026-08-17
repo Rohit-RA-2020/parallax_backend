@@ -104,6 +104,51 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleSearchMedia(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := s.Projects.Get(id); err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
+		query = strings.TrimSpace(r.URL.Query().Get("query"))
+	}
+	if query == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"query": "", "results": []any{}})
+		return
+	}
+	limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
+	if s.Indexer == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"query": query, "results": []any{}})
+		return
+	}
+	hits, err := s.Indexer.SearchAll(r.Context(), id, query, limit)
+	if err != nil {
+		if strings.Contains(err.Error(), "not configured") {
+			writeJSON(w, http.StatusOK, map[string]any{"query": query, "results": []any{}})
+			return
+		}
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	results := make([]map[string]any, 0, len(hits))
+	for _, hit := range hits {
+		item := map[string]any{"score": hit.Score}
+		for _, key := range []string{"kind", "path", "name", "text_en", "spoken_en", "start", "end", "scene_id"} {
+			if v, ok := hit.Payload[key]; ok {
+				item[key] = v
+			}
+		}
+		results = append(results, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"query":   query,
+		"count":   len(results),
+		"results": results,
+	})
+}
+
 func (s *Server) handleListMedia(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	media, err := s.Projects.ListMedia(id)

@@ -67,7 +67,7 @@ func (x *Indexer) Mark(projectID, rel, state, errMsg string) {
 		UpdatedAt: time.Now().UTC(),
 	}
 	x.setLive(projectID, rel, st)
-	_ = writeStatus(project.Dir, st)
+	x.persistStatus(project.Dir, st)
 }
 
 // MarkCaptionProgress records how many stills or scenes have been described.
@@ -95,7 +95,7 @@ func (x *Indexer) MarkCaptionProgress(projectID, rel string, done, total int) {
 	x.setLive(projectID, rel, st)
 	if x.Projects != nil {
 		if project, err := x.Projects.Get(projectID); err == nil {
-			_ = writeStatus(project.Dir, st)
+			x.persistStatus(project.Dir, st)
 		}
 	}
 }
@@ -150,7 +150,27 @@ func (x *Indexer) Clear(projectID, rel string) {
 	if err != nil {
 		return
 	}
-	_ = deleteStatus(project.Dir, rel)
+	x.removeStatus(project.Dir, rel)
+}
+
+func (x *Indexer) persistStatus(projectDir string, st JobStatus) {
+	if x == nil {
+		_ = writeStatus(projectDir, st)
+		return
+	}
+	x.diskMu.Lock()
+	defer x.diskMu.Unlock()
+	_ = writeStatus(projectDir, st)
+}
+
+func (x *Indexer) removeStatus(projectDir, rel string) {
+	if x == nil {
+		_ = deleteStatus(projectDir, rel)
+		return
+	}
+	x.diskMu.Lock()
+	defer x.diskMu.Unlock()
+	_ = deleteStatus(projectDir, rel)
 }
 
 func (x *Indexer) clearProject(projectID string) {

@@ -26,13 +26,19 @@ type Indexer struct {
 	Qdrant     *qdrant.Client
 	Completer  func() llm.Completer
 	Logger     *slog.Logger
+	// ImageWorkers is how many stills to caption at once. Zero means 6.
+	// Speech and video stay serial so the GPU is not shared.
+	ImageWorkers int
 
-	mu    sync.Mutex
-	live  map[string]JobStatus
-	hints map[string]string
-	queue chan indexJob
-	stop  chan struct{}
-	run   bool
+	mu      sync.Mutex
+	diskMu  sync.Mutex
+	live    map[string]JobStatus
+	hints   map[string]string
+	queue   chan indexJob
+	light   chan indexJob
+	stop    chan struct{}
+	workers sync.WaitGroup
+	run     bool
 }
 
 type indexJob struct {
@@ -52,7 +58,19 @@ func (x *Indexer) Enabled() bool {
 	return x != nil && x.Projects != nil && (x.Whisper != nil || x.canCaption())
 }
 
-// Start warms the whisper worker and processes one index job at a time.
+const (
+	defaultImageWorkers = 6
+	indexQueueSize      = 128
+)
+
+func (x *Indexer) imageWorkers() int {
+	if x != nil && x.ImageWorkers > 0 {
+		return x.ImageWorkers
+	}
+	return defaultImageWorkers
+}
+
+// Start warms the whisper worker, one serial media loop, and a stills pool.
 func (x *Indexer) Start() {
 	if x == nil || x.Projects == nil {
 		return
@@ -62,9 +80,11 @@ func (x *Indexer) Start() {
 		x.mu.Unlock()
 		return
 	}
-	x.queue = make(chan indexJob, 128)
+	x.queue = make(chan indexJob, indexQueueSize)
+	x.light = make(chan indexJob, indexQueueSize)
 	x.stop = make(chan struct{})
 	x.run = true
+	n := x.imageWorkers()
 	x.mu.Unlock()
 	if w, ok := x.Whisper.(*FasterWhisper); ok {
 		go func() {
@@ -75,10 +95,15 @@ func (x *Indexer) Start() {
 			}
 		}()
 	}
+	x.workers.Add(1 + n)
 	go x.loop()
+	for i := 0; i < n; i++ {
+		go x.lightLoop()
+	}
 }
 
-// Enqueue schedules a file behind any job already in the index queue.
+// Enqueue schedules a file. Stills go to a parallel caption pool; speech and
+// video stay on the serial queue so Whisper keeps the GPU to itself.
 func (x *Indexer) Enqueue(projectID, rel string) {
 	if x == nil || x.Projects == nil {
 		return
@@ -105,36 +130,56 @@ func (x *Indexer) Enqueue(projectID, rel string) {
 	}
 	x.Start()
 	x.Mark(projectID, rel, StateQueued, "")
+	dest := x.queue
+	if HasImage(rel) {
+		dest = x.light
+	}
 	select {
-	case x.queue <- indexJob{projectID: projectID, rel: rel}:
+	case dest <- indexJob{projectID: projectID, rel: rel}:
 	case <-x.stop:
 	}
 }
 
 func (x *Indexer) loop() {
+	defer x.workers.Done()
 	for {
 		select {
 		case <-x.stop:
 			return
 		case job := <-x.queue:
-			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
-			if err := x.Index(ctx, job.projectID, job.rel); err != nil {
-				if x.Projects != nil {
-					if _, getErr := x.Projects.Get(job.projectID); getErr != nil {
-						x.clearProject(job.projectID)
-						cancel()
-						continue
-					}
-				}
-				x.Mark(job.projectID, job.rel, StateFailed, err.Error())
-				x.log().Error("index media", "project", job.projectID, "path", job.rel, "err", err)
-			}
-			cancel()
+			x.runJob(job)
 		}
 	}
 }
 
-// Close stops the queue and the resident whisper worker.
+func (x *Indexer) lightLoop() {
+	defer x.workers.Done()
+	for {
+		select {
+		case <-x.stop:
+			return
+		case job := <-x.light:
+			x.runJob(job)
+		}
+	}
+}
+
+func (x *Indexer) runJob(job indexJob) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+	defer cancel()
+	if err := x.Index(ctx, job.projectID, job.rel); err != nil {
+		if x.Projects != nil {
+			if _, getErr := x.Projects.Get(job.projectID); getErr != nil {
+				x.clearProject(job.projectID)
+				return
+			}
+		}
+		x.Mark(job.projectID, job.rel, StateFailed, err.Error())
+		x.log().Error("index media", "project", job.projectID, "path", job.rel, "err", err)
+	}
+}
+
+// Close stops the queues and the resident whisper worker.
 func (x *Indexer) Close() {
 	if x == nil {
 		return
@@ -145,6 +190,7 @@ func (x *Indexer) Close() {
 		x.run = false
 	}
 	x.mu.Unlock()
+	x.workers.Wait()
 	if w, ok := x.Whisper.(*FasterWhisper); ok {
 		w.Close()
 	}
@@ -460,13 +506,23 @@ func (x *Indexer) Search(ctx context.Context, projectID, query string, paths []s
 	return x.search(ctx, projectID, query, paths, "", []string{KindImage, KindVideoScene}, limit)
 }
 
+// SearchAll embeds an English query and returns stills, scenes, and speech hits.
+func (x *Indexer) SearchAll(ctx context.Context, projectID, query string, limit int) ([]qdrant.Hit, error) {
+	if limit < 1 {
+		limit = 24
+	}
+	return x.search(ctx, projectID, query, nil, "", nil, limit)
+}
+
 func (x *Indexer) search(ctx context.Context, projectID, query string, paths []string, kind string, excludeKinds []string, limit int) ([]qdrant.Hit, error) {
 	if x == nil || x.Embeddings == nil || x.Qdrant == nil {
-		switch kind {
-		case KindImage:
+		switch {
+		case kind == KindImage:
 			return nil, fmt.Errorf("image search is not configured")
-		case KindVideoScene:
+		case kind == KindVideoScene:
 			return nil, fmt.Errorf("scene search is not configured")
+		case kind == "" && len(excludeKinds) == 0:
+			return nil, fmt.Errorf("media search is not configured")
 		default:
 			return nil, fmt.Errorf("transcript search is not configured")
 		}

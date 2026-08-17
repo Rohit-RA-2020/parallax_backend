@@ -112,7 +112,9 @@ English segment text (plus neighboring segments) is embedded through a
 **separate** OpenAI-compatible embeddings endpoint and upserted into **local
 Qdrant**, one collection per project. Stills take the same path: a vision
 caption is written on upload, generate, or in-place edit, then embedded as
-`kind: "image"` points so they do not mix with speech. Videos are split on
+`kind: "image"` points so they do not mix with speech. Stills caption in a
+small Go worker pool (default 6) so a multi-file upload does not wait in a
+single line; speech and video stay serial because of the GPU. Videos are split on
 visual cuts (with interval samples inside long takes); each shot is captioned
 and stored as `kind: "video_scene"` with start/end times. Overlapping English
 transcript text is attached when speech exists. Director must query in
@@ -155,6 +157,7 @@ scoped to that directory for the whole session.
 | `GET` | `/v1/projects/{id}` | Get a project and its media |
 | `DELETE` | `/v1/projects/{id}` | Permanently delete a project, its media, chats, transcripts, and embeddings |
 | `GET` | `/v1/projects/{id}/media` | List uploaded and generated media |
+| `GET` | `/v1/projects/{id}/media/search?q=` | Semantic search over stills, video shots, and speech |
 | `POST` | `/v1/projects/{id}/media` | Upload one or more multipart `files` |
 | `POST` | `/v1/projects/{id}/export` | Render a downloadable file (`mp4`, `mov`, `webm`, `gif`, `mp3`) |
 | `GET` | `/v1/projects/{id}/files/{path...}` | Stream a project file with range support |

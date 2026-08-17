@@ -17,6 +17,7 @@ import (
 
 	"parallax/internal/agent"
 	"parallax/internal/config"
+	"parallax/internal/embed"
 	. "parallax/internal/httpapi"
 	"parallax/internal/llm"
 	"parallax/internal/projects"
@@ -165,6 +166,79 @@ func testServer(t *testing.T, p llm.ChatProvider) *Server {
 		MaxIters:  4,
 		Workspace: dir,
 		NewLLM:    func(config.LLM) llm.ChatProvider { return p },
+	}
+}
+
+func TestSearchMediaReturnsIndexHits(t *testing.T) {
+	s := testServer(t, fakeProvider{})
+	var gotQuery []string
+	embedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Input []string `json:"input"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		gotQuery = req.Input
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"index": 0, "embedding": []float32{0.2, 0.1}}}})
+	}))
+	defer embedSrv.Close()
+	qdrantSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/points/search") {
+			http.Error(w, "unhandled", http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"result": []map[string]any{{
+				"id": "p1", "score": 0.87,
+				"payload": map[string]any{"kind": "image", "path": "media/neon-alley.jpg", "name": "neon-alley.jpg", "text_en": "Night alley with magenta neon"},
+			}},
+		})
+	}))
+	defer qdrantSrv.Close()
+	emb := embed.NewClient(embedSrv.URL+"/v1", "k", "m")
+	emb.HTTPClient = embedSrv.Client()
+	qd := qdrant.NewClient(qdrantSrv.URL, "")
+	qd.HTTPClient = qdrantSrv.Client()
+	s.Indexer = &transcript.Indexer{Projects: s.Projects, Embeddings: emb, Qdrant: qd}
+
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	resp, err := http.Post(ts.URL+"/v1/projects", "application/json", strings.NewReader(`{"name":"Demo"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err = http.Get(ts.URL + "/v1/projects/" + created.ID + "/media/search?q=neon+alley")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%s", resp.Status)
+	}
+	var body struct {
+		Query   string `json:"query"`
+		Results []struct {
+			Path   string  `json:"path"`
+			Kind   string  `json:"kind"`
+			Score  float64 `json:"score"`
+			TextEN string  `json:"text_en"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Query != "neon alley" || len(body.Results) != 1 || body.Results[0].Path != "media/neon-alley.jpg" || body.Results[0].Kind != "image" {
+		t.Fatalf("body=%+v", body)
+	}
+	if len(gotQuery) != 1 || gotQuery[0] != "neon alley" {
+		t.Fatalf("embedded=%v", gotQuery)
 	}
 }
 

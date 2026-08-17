@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"parallax/internal/embed"
 	"parallax/internal/llm"
@@ -273,6 +275,33 @@ func TestSearchImagesFiltersKind(t *testing.T) {
 	}
 }
 
+func TestSearchAllHasNoKindFilter(t *testing.T) {
+	var got map[string]any
+	qd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_ = json.NewEncoder(w).Encode(map[string]any{"result": []map[string]any{}})
+	}))
+	defer qd.Close()
+	embSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"index": 0, "embedding": []float32{0.2, 0.1}}}})
+	}))
+	defer embSrv.Close()
+	emb := embed.NewClient(embSrv.URL+"/v1", "k", "m")
+	emb.HTTPClient = embSrv.Client()
+	client := qdrant.NewClient(qd.URL, "")
+	client.HTTPClient = qd.Client()
+	idx := &Indexer{Embeddings: emb, Qdrant: client}
+	if _, err := idx.SearchAll(context.Background(), "demo", "neon alley", 12); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["filter"]; ok {
+		t.Fatalf("expected no kind filter, got %#v", got["filter"])
+	}
+	if got["limit"] != float64(12) {
+		t.Fatalf("limit=%v", got["limit"])
+	}
+}
+
 func TestSearchTranscriptExcludesImages(t *testing.T) {
 	var got map[string]any
 	qd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -303,5 +332,72 @@ func TestSearchTranscriptExcludesImages(t *testing.T) {
 	}
 	if !excluded[KindImage] || !excluded[KindVideoScene] {
 		t.Fatalf("filter=%#v", filter)
+	}
+}
+
+type overlapCompleter struct {
+	mu   *sync.Mutex
+	live *int
+	max  *int
+}
+
+func (c overlapCompleter) Complete(context.Context, llm.Request) (string, error) {
+	c.mu.Lock()
+	*c.live++
+	if *c.live > *c.max {
+		*c.max = *c.live
+	}
+	c.mu.Unlock()
+	time.Sleep(80 * time.Millisecond)
+	c.mu.Lock()
+	*c.live--
+	c.mu.Unlock()
+	return "A small test still with a solid color field.", nil
+}
+
+func TestEnqueueImagesRunInParallel(t *testing.T) {
+	store, err := projects.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := store.Create("Burst")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	live, maxLive := 0, 0
+	idx := &Indexer{
+		Projects:     store,
+		ImageWorkers: 4,
+		Completer: func() llm.Completer {
+			return overlapCompleter{mu: &mu, live: &live, max: &maxLive}
+		},
+	}
+	defer idx.Close()
+
+	names := []string{"a.jpg", "b.jpg", "c.jpg", "d.jpg"}
+	for _, name := range names {
+		writeTinyJPEG(t, filepath.Join(project.Dir, "media", name))
+		idx.Enqueue(project.ID, "media/"+name)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		ready := 0
+		for _, name := range names {
+			if idx.Statuses(project.ID)["media/"+name].State == StateReady {
+				ready++
+			}
+		}
+		if ready == len(names) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("status=%+v maxLive=%d", idx.Statuses(project.ID), maxLive)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if maxLive < 2 {
+		t.Fatalf("expected overlapping still captions, maxLive=%d", maxLive)
 	}
 }
