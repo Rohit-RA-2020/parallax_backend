@@ -43,6 +43,7 @@ func TestGenerateImageWritesBinFile(t *testing.T) {
 
 	ws := t.TempDir()
 	var mutated bool
+	var appliedRel, appliedPrompt string
 	reg := NewRegistry()
 	RegisterImage(reg, ImageEnv{
 		Workspace:  ws,
@@ -50,6 +51,10 @@ func TestGenerateImageWritesBinFile(t *testing.T) {
 		BaseURL:    server.URL + "/v1beta",
 		Model:      "gemini-3.1-flash-image",
 		OnMutation: func() { mutated = true },
+		OnApplied: func(rel, prompt string) {
+			appliedRel = rel
+			appliedPrompt = prompt
+		},
 	})
 
 	res := reg.Execute(context.Background(), "generate_image", `{
@@ -80,6 +85,9 @@ func TestGenerateImageWritesBinFile(t *testing.T) {
 	}
 	if !mutated {
 		t.Fatal("expected media mutation")
+	}
+	if appliedRel != "media/neon-alley.jpg" || !strings.Contains(appliedPrompt, "neon alley") {
+		t.Fatalf("applied rel=%q prompt=%q", appliedRel, appliedPrompt)
 	}
 	data, err := os.ReadFile(filepath.Join(ws, "media", "neon-alley.jpg"))
 	if err != nil {

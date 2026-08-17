@@ -176,7 +176,17 @@ func (c *Client) deleteFilter(ctx context.Context, collection string, filter map
 	return nil
 }
 
-func (c *Client) Search(ctx context.Context, collection string, vector []float32, paths []string, limit int) ([]Hit, error) {
+// SearchOpts narrows a project collection query. Kind and ExcludeKind keep
+// stills and transcript segments from mixing in the same collection.
+type SearchOpts struct {
+	Paths       []string
+	Kind        string
+	ExcludeKind string
+	Limit       int
+}
+
+func (c *Client) Search(ctx context.Context, collection string, vector []float32, opts SearchOpts) ([]Hit, error) {
+	limit := opts.Limit
 	if limit < 1 {
 		limit = 8
 	}
@@ -188,15 +198,8 @@ func (c *Client) Search(ctx context.Context, collection string, vector []float32
 		"limit":        limit,
 		"with_payload": true,
 	}
-	if cleaned := cleanPaths(paths); len(cleaned) > 0 {
-		should := make([]map[string]any, 0, len(cleaned))
-		for _, path := range cleaned {
-			should = append(should, map[string]any{
-				"key":   "path",
-				"match": map[string]any{"value": path},
-			})
-		}
-		body["filter"] = map[string]any{"should": should}
+	if filter := searchFilter(opts.Paths, opts.Kind, opts.ExcludeKind); filter != nil {
+		body["filter"] = filter
 	}
 	status, raw, err := c.do(ctx, http.MethodPost, "/collections/"+url.PathEscape(collection)+"/points/search", body)
 	if err != nil {
@@ -277,6 +280,55 @@ func collectionDim(raw []byte) (int, bool) {
 		return 0, false
 	}
 	return parsed.Result.Config.Params.Vectors.Size, true
+}
+
+func searchFilter(paths []string, kind, excludeKind string) map[string]any {
+	kind = strings.TrimSpace(kind)
+	excludeKind = strings.TrimSpace(excludeKind)
+	cleaned := cleanPaths(paths)
+
+	var must []map[string]any
+	var mustNot []map[string]any
+	if kind != "" {
+		must = append(must, map[string]any{
+			"key":   "kind",
+			"match": map[string]any{"value": kind},
+		})
+	}
+	if excludeKind != "" {
+		mustNot = append(mustNot, map[string]any{
+			"key":   "kind",
+			"match": map[string]any{"value": excludeKind},
+		})
+	}
+	switch len(cleaned) {
+	case 0:
+	case 1:
+		must = append(must, map[string]any{
+			"key":   "path",
+			"match": map[string]any{"value": cleaned[0]},
+		})
+	default:
+		should := make([]map[string]any, 0, len(cleaned))
+		for _, path := range cleaned {
+			should = append(should, map[string]any{
+				"key":   "path",
+				"match": map[string]any{"value": path},
+			})
+		}
+		must = append(must, map[string]any{"should": should})
+	}
+	if len(must) == 0 && len(mustNot) == 0 {
+		return nil
+	}
+	out := map[string]any{}
+	if len(must) > 0 {
+		out["must"] = must
+	}
+	if len(mustNot) > 0 {
+		out["must_not"] = mustNot
+	}
+	return out
 }
 
 func cleanPaths(paths []string) []string {

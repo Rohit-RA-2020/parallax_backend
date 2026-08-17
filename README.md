@@ -110,8 +110,10 @@ failed instead of throwing the whole job away.
 Non-English segments are translated to English by the **active chat LLM**.
 English segment text (plus neighboring segments) is embedded through a
 **separate** OpenAI-compatible embeddings endpoint and upserted into **local
-Qdrant**, one collection per project. Director must query in English and may
-filter by file path.
+Qdrant**, one collection per project. Stills take the same path: a vision
+caption is written on upload, generate, or in-place edit, then embedded as
+`kind: "image"` points so they do not mix with speech. Director must query
+in English and may filter by file path.
 
 ```bash
 # from parallax_backend/
@@ -221,6 +223,8 @@ project fps, source in-points, and media paths (not playback URLs).
 | `create_project_checkpoint` | Name the state committed by the current request |
 | `search_web` | Search the web through Exa for links, metadata, and page content |
 | `generate_image` | Generate a still with Gemini, or edit an existing uploaded/generated still by sending it back with a prompt |
+| `search_images` | English semantic search over this project's described stills (optional path filter) |
+| `get_image_caption` | Read the stored English description for one still |
 | `search_transcript` | English semantic search over this project's speech (optional path filter) |
 | `get_transcript` | Read the timed original + English transcript for one file |
 | `add_captions` | Place a visible C1 caption track from the stored transcript (or burn into the picture) |

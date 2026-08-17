@@ -58,34 +58,33 @@ func main() {
 		FFprobe: cfg.FFprobeBin,
 	}
 	settings := config.NewStore(cfg.SettingsPath, cfg.LLMs)
-	var indexer *transcript.Indexer
+	idx := &transcript.Indexer{
+		Projects: projectStore,
+		Bins:     bins,
+		Qdrant:   qdrant.NewClient(cfg.QdrantURL, cfg.QdrantAPIKey),
+		Completer: func() llm.Completer {
+			return llm.NewCompatClient(settings.Get().BaseURL, settings.Get().APIKey, settings.Get().Model)
+		},
+		Logger: log,
+	}
 	if whisperConfigured(cfg) {
-		idx := &transcript.Indexer{
-			Projects: projectStore,
-			Bins:     bins,
-			Whisper: &transcript.FasterWhisper{
-				Python:  cfg.WhisperPython,
-				Script:  cfg.WhisperScript,
-				Model:   cfg.WhisperModel,
-				Device:  cfg.WhisperDevice,
-				Compute: cfg.WhisperCompute,
-			},
-			Qdrant: qdrant.NewClient(cfg.QdrantURL, cfg.QdrantAPIKey),
-			Completer: func() llm.Completer {
-				return llm.NewCompatClient(settings.Get().BaseURL, settings.Get().APIKey, settings.Get().Model)
-			},
-			Logger: log,
+		idx.Whisper = &transcript.FasterWhisper{
+			Python:  cfg.WhisperPython,
+			Script:  cfg.WhisperScript,
+			Model:   cfg.WhisperModel,
+			Device:  cfg.WhisperDevice,
+			Compute: cfg.WhisperCompute,
 		}
-		if err := config.ValidateEmbedding(cfg.Embedding); err != nil {
-			log.Info("transcript embeddings disabled", "reason", err.Error())
-		} else {
-			idx.Embeddings = embed.NewClient(cfg.Embedding.BaseURL, cfg.Embedding.APIKey, cfg.Embedding.Model)
-		}
-		idx.Start()
-		indexer = idx
 	} else {
 		log.Info("transcript indexing disabled", "reason", "faster-whisper script is missing")
 	}
+	if err := config.ValidateEmbedding(cfg.Embedding); err != nil {
+		log.Info("embeddings disabled", "reason", err.Error())
+	} else {
+		idx.Embeddings = embed.NewClient(cfg.Embedding.BaseURL, cfg.Embedding.APIKey, cfg.Embedding.Model)
+	}
+	idx.Start()
+	indexer := idx
 
 	srv := &httpapi.Server{
 		Addr:             cfg.Addr,

@@ -58,6 +58,65 @@ func TestGetTranscriptReadsSavedDocument(t *testing.T) {
 	}
 }
 
+func TestGetImageCaptionReadsSavedDocument(t *testing.T) {
+	store, err := projects.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := store.Create("Stills")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(project.Dir, "media")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "still.jpg")
+	if err := os.WriteFile(path, []byte("jpeg"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := projects.HashFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transcript.SaveImage(project.Dir, &transcript.ImageCaption{
+		ContentHash: hash,
+		Path:        "media/still.jpg",
+		Name:        "still.jpg",
+		TextEN:      "Night alley with magenta neon",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := tools.NewRegistry()
+	tools.RegisterTranscript(reg, tools.TranscriptEnv{
+		Indexer:   &transcript.Indexer{Projects: store},
+		ProjectID: project.ID,
+	})
+	res := reg.Execute(context.Background(), "get_image_caption", `{"path":"media/still.jpg"}`)
+	if !res.OK {
+		t.Fatal(res.Error)
+	}
+	doc := res.Output.(*transcript.ImageCaption)
+	if doc.TextEN != "Night alley with magenta neon" || doc.Name != "still.jpg" {
+		t.Fatalf("doc=%+v", doc)
+	}
+}
+
+func TestSearchImagesRequiresEmbedder(t *testing.T) {
+	reg := tools.NewRegistry()
+	tools.RegisterTranscript(reg, tools.TranscriptEnv{
+		Indexer: &transcript.Indexer{
+			Qdrant: qdrant.NewClient("http://127.0.0.1:6333", ""),
+		},
+		ProjectID: "x",
+	})
+	res := reg.Execute(context.Background(), "search_images", `{"query":"neon alley"}`)
+	if res.OK {
+		t.Fatal("expected missing embedder error")
+	}
+}
+
 func TestSearchTranscriptRequiresQuery(t *testing.T) {
 	reg := tools.NewRegistry()
 	tools.RegisterTranscript(reg, tools.TranscriptEnv{

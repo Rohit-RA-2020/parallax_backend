@@ -45,7 +45,7 @@ func TestSearchFiltersPaths(t *testing.T) {
 
 	c := NewClient(srv.URL, "")
 	c.HTTPClient = srv.Client()
-	hits, err := c.Search(context.Background(), "p_demo", []float32{0.1, 0.2}, []string{"media/talk.mp4"}, 5)
+	hits, err := c.Search(context.Background(), "p_demo", []float32{0.1, 0.2}, SearchOpts{Paths: []string{"media/talk.mp4"}, Limit: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,10 +53,45 @@ func TestSearchFiltersPaths(t *testing.T) {
 		t.Fatalf("hits=%+v", hits)
 	}
 	filter := got["filter"].(map[string]any)
-	should := filter["should"].([]any)
-	match := should[0].(map[string]any)["match"].(map[string]any)
+	must := filter["must"].([]any)
+	match := must[0].(map[string]any)["match"].(map[string]any)
 	if match["value"] != "media/talk.mp4" {
 		t.Fatalf("filter=%#v", got["filter"])
+	}
+}
+
+func TestSearchFiltersKind(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"result": []map[string]any{}})
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "")
+	c.HTTPClient = srv.Client()
+	if _, err := c.Search(context.Background(), "p_demo", []float32{0.1}, SearchOpts{
+		Kind:        "image",
+		ExcludeKind: "transcript",
+		Paths:       []string{"media/a.jpg", "media/b.jpg"},
+		Limit:       3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	filter := got["filter"].(map[string]any)
+	must := filter["must"].([]any)
+	if must[0].(map[string]any)["key"] != "kind" {
+		t.Fatalf("filter=%#v", filter)
+	}
+	mustNot := filter["must_not"].([]any)
+	if mustNot[0].(map[string]any)["key"] != "kind" {
+		t.Fatalf("filter=%#v", filter)
+	}
+	if _, ok := must[1].(map[string]any)["should"]; !ok {
+		t.Fatalf("expected nested path should, got %#v", filter)
 	}
 }
 

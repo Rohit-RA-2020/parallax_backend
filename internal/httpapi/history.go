@@ -45,6 +45,7 @@ func (s *Server) handleUndoHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.Projects.Touch(r.PathValue("id"))
+	s.indexProject(r.PathValue("id"))
 	writeJSON(w, http.StatusOK, doc)
 }
 
@@ -60,6 +61,7 @@ func (s *Server) handleRedoHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.Projects.Touch(r.PathValue("id"))
+	s.indexProject(r.PathValue("id"))
 	writeJSON(w, http.StatusOK, doc)
 }
 
@@ -79,6 +81,7 @@ func (s *Server) handleRestoreHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.Projects.Touch(r.PathValue("id"))
+	s.indexProject(r.PathValue("id"))
 	writeJSON(w, http.StatusOK, doc)
 }
 

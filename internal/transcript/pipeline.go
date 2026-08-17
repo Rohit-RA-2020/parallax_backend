@@ -29,6 +29,7 @@ type Indexer struct {
 
 	mu    sync.Mutex
 	live  map[string]JobStatus
+	hints map[string]string
 	queue chan indexJob
 	stop  chan struct{}
 	run   bool
@@ -46,14 +47,14 @@ func (x *Indexer) log() *slog.Logger {
 	return slog.Default()
 }
 
-// Enabled is true when ASR is configured. Embeddings may still be skipped.
+// Enabled is true when speech or still indexing can run. Embeddings may still be skipped.
 func (x *Indexer) Enabled() bool {
-	return x != nil && x.Projects != nil && x.Whisper != nil
+	return x != nil && x.Projects != nil && (x.Whisper != nil || x.canCaption())
 }
 
 // Start warms the whisper worker and processes one index job at a time.
 func (x *Indexer) Start() {
-	if x == nil {
+	if x == nil || x.Projects == nil {
 		return
 	}
 	x.mu.Lock()
@@ -77,13 +78,25 @@ func (x *Indexer) Start() {
 	go x.loop()
 }
 
-// Enqueue schedules a file behind any job already using the GPU.
+// Enqueue schedules a file behind any job already in the index queue.
 func (x *Indexer) Enqueue(projectID, rel string) {
-	if !x.Enabled() {
+	if x == nil || x.Projects == nil {
 		return
 	}
 	rel = filepath.ToSlash(strings.TrimSpace(rel))
-	if rel == "" || !hasAudioExt(rel) {
+	if rel == "" {
+		return
+	}
+	switch {
+	case HasImage(rel):
+		if !x.canCaption() {
+			return
+		}
+	case hasAudioExt(rel):
+		if x.Whisper == nil {
+			return
+		}
+	default:
 		return
 	}
 	x.Start()
@@ -133,14 +146,20 @@ func (x *Indexer) Close() {
 	}
 }
 
-// Index transcribes and embeds one project-relative media file.
+// Index transcribes or captions one project-relative media file, then embeds it.
 func (x *Indexer) Index(ctx context.Context, projectID, rel string) error {
-	if !x.Enabled() {
+	if x == nil || x.Projects == nil {
 		return nil
 	}
 	rel = filepath.ToSlash(strings.TrimSpace(rel))
 	if rel == "" {
 		return fmt.Errorf("media path is required")
+	}
+	if HasImage(rel) {
+		return x.indexImage(ctx, projectID, rel)
+	}
+	if x.Whisper == nil {
+		return nil
 	}
 	project, err := x.Projects.Get(projectID)
 	if err != nil {
@@ -341,6 +360,7 @@ func (x *Indexer) upsert(ctx context.Context, projectID string, doc *Document) e
 			ID:     qdrant.PointID(doc.ContentHash, seg.ID),
 			Vector: vectors[i],
 			Payload: map[string]any{
+				"kind":         KindTranscript,
 				"content_hash": doc.ContentHash,
 				"path":         doc.Path,
 				"start":        seg.Start,
@@ -419,9 +439,16 @@ func (x *Indexer) Get(projectID, rel string) (*Document, error) {
 	return doc, nil
 }
 
-// Search embeds an English query and returns matching segments.
+// Search embeds an English query and returns matching transcript segments.
 func (x *Indexer) Search(ctx context.Context, projectID, query string, paths []string, limit int) ([]qdrant.Hit, error) {
+	return x.search(ctx, projectID, query, paths, "", KindImage, limit)
+}
+
+func (x *Indexer) search(ctx context.Context, projectID, query string, paths []string, kind, excludeKind string, limit int) ([]qdrant.Hit, error) {
 	if x == nil || x.Embeddings == nil || x.Qdrant == nil {
+		if kind == KindImage {
+			return nil, fmt.Errorf("image search is not configured")
+		}
 		return nil, fmt.Errorf("transcript search is not configured")
 	}
 	query = strings.TrimSpace(query)
@@ -435,7 +462,12 @@ func (x *Indexer) Search(ctx context.Context, projectID, query string, paths []s
 	if len(vecs) == 0 {
 		return nil, fmt.Errorf("embed: empty query vector")
 	}
-	return x.Qdrant.Search(ctx, qdrant.CollectionName(projectID), vecs[0], paths, limit)
+	return x.Qdrant.Search(ctx, qdrant.CollectionName(projectID), vecs[0], qdrant.SearchOpts{
+		Paths:       paths,
+		Kind:        kind,
+		ExcludeKind: excludeKind,
+		Limit:       limit,
+	})
 }
 
 func assignSegmentIDs(segments []Segment) {

@@ -42,14 +42,31 @@ type Server struct {
 }
 
 func (s *Server) indexMedia(projectID, rel string) {
-	if s == nil || s.Indexer == nil || !s.Indexer.Enabled() {
-		return
-	}
-	rel = strings.TrimSpace(rel)
-	if rel == "" || !transcript.HasSpeech(rel) {
+	if s == nil || s.Indexer == nil {
 		return
 	}
 	s.Indexer.Enqueue(projectID, rel)
+}
+
+func (s *Server) indexGeneratedImage(projectID, rel, prompt string) {
+	if s == nil || s.Indexer == nil {
+		return
+	}
+	s.Indexer.SetImageHint(projectID, rel, prompt)
+	s.Indexer.Enqueue(projectID, rel)
+}
+
+func (s *Server) indexProject(projectID string) {
+	if s == nil || s.Projects == nil {
+		return
+	}
+	media, err := s.Projects.ListMedia(projectID)
+	if err != nil {
+		return
+	}
+	for _, item := range media {
+		s.indexMedia(projectID, item.Path)
+	}
 }
 
 func (s *Server) systemPrompt() string {
@@ -229,6 +246,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			BaseURL:    s.GeminiBaseURL,
 			Model:      s.GeminiImageModel,
 			OnMutation: timelineTx.MarkMediaMutation,
+			OnApplied:  func(rel, prompt string) { s.indexGeneratedImage(projectID, rel, prompt) },
 		})
 		tools.RegisterTimeline(toolRegistry, tools.TimelineEnv{
 			Transaction: timelineTx,

@@ -136,7 +136,7 @@ func TestIndexerWritesTranscriptAndUpsertsEnglishVectors(t *testing.T) {
 		t.Fatalf("upserted=%#v", upserted)
 	}
 	payload := upserted[0]["payload"].(map[string]any)
-	if payload["text_en"] != "Thanks" || payload["path"] != "media/talk.mp4" || payload["content_hash"] != hash {
+	if payload["text_en"] != "Thanks" || payload["path"] != "media/talk.mp4" || payload["content_hash"] != hash || payload["kind"] != KindTranscript {
 		t.Fatalf("payload=%#v", payload)
 	}
 	if idx.Statuses(project.ID)["media/talk.mp4"].State != StateReady {

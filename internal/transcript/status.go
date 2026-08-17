@@ -13,6 +13,7 @@ const (
 	StateQueued       = "queued"
 	StateTranscribing = "transcribing"
 	StateTranslating  = "translating"
+	StateDescribing   = "describing"
 	StateIndexing     = "indexing"
 	StateReady        = "ready"
 	StateIndexFailed  = "index_failed"

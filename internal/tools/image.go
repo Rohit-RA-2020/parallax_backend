@@ -42,12 +42,13 @@ type ImageEnv struct {
 	Model      string
 	Client     *http.Client
 	OnMutation func()
+	OnApplied  func(rel, prompt string)
 }
 
 func RegisterImage(reg *Registry, env ImageEnv) {
 	reg.Register(llm.NewFunctionTool(
 		"generate_image",
-		"Generate or edit a still with Gemini and save it into the project bin under media/. For a new picture, pass only a detailed prompt. To edit an uploaded or previously generated still, pass source (or images) with the workspace path plus an edit prompt — the source bytes are sent to Gemini with the instructions. A single source is replaced in place so the bin and timeline update; pass apply_to \"none\" to keep a separate variant. Additional images can be mixed in as references. Then call place_media only when a new file should go on the timeline.",
+		"Generate or edit a still with Gemini and save it into the project bin under media/. For a new picture, pass only a detailed prompt. To edit an uploaded or previously generated still, pass source (or images) with the workspace path plus an edit prompt — the source bytes are sent to Gemini with the instructions. A single source is replaced in place so the bin and timeline update; pass apply_to \"none\" to keep a separate variant. Additional images can be mixed in as references. New and edited stills are described and indexed for search_images. Then call place_media only when a new file should go on the timeline.",
 		json.RawMessage(`{
 			"type":"object",
 			"properties":{
@@ -142,6 +143,9 @@ func (e ImageEnv) generateImage(ctx context.Context, raw json.RawMessage) Result
 	}
 	if e.OnMutation != nil {
 		e.OnMutation()
+	}
+	if e.OnApplied != nil {
+		e.OnApplied(rel, in.Prompt)
 	}
 
 	width, height := imageDimensions(generated.Bytes)
