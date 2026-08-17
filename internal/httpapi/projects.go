@@ -279,7 +279,7 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.Projects.Touch(id)
-	writeJSON(w, http.StatusCreated, chatResponse(chat, false))
+	writeJSON(w, http.StatusCreated, chatResponse(id, chat, false))
 }
 
 func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request) {
@@ -288,7 +288,7 @@ func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, chatResponse(chat, true))
+	writeJSON(w, http.StatusOK, chatResponse(r.PathValue("id"), chat, true))
 }
 
 func (s *Server) handlePatchChat(w http.ResponseWriter, r *http.Request) {
@@ -303,7 +303,7 @@ func (s *Server) handlePatchChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.Projects.Touch(r.PathValue("id"))
-	writeJSON(w, http.StatusOK, chatResponse(chat, false))
+	writeJSON(w, http.StatusOK, chatResponse(r.PathValue("id"), chat, false))
 }
 
 func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
@@ -359,7 +359,7 @@ func (s *Server) handlePutTimeline(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, saved)
 }
 
-func chatResponse(chat projects.Chat, includeMessages bool) map[string]any {
+func chatResponse(projectID string, chat projects.Chat, includeMessages bool) map[string]any {
 	out := map[string]any{
 		"id":         chat.ID,
 		"title":      chat.Title,
@@ -367,7 +367,7 @@ func chatResponse(chat projects.Chat, includeMessages bool) map[string]any {
 		"updated_at": chat.UpdatedAt,
 	}
 	if includeMessages {
-		out["messages"] = projects.PublicChatMessages(chat.Messages, chat.ResponseDurations, chat.ResponseTraces)
+		out["messages"] = projects.PublicChatMessages(projectID, chat.Messages, chat.ResponseDurations, chat.ResponseTraces)
 	}
 	return out
 }

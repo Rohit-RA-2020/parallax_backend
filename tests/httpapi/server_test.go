@@ -70,6 +70,47 @@ func TestChatPassesThinkingEffort(t *testing.T) {
 	}
 }
 
+func TestChatAcceptsAttachedImage(t *testing.T) {
+	var seen llm.Request
+	s := testServer(t, fakeProvider{
+		deltas: []llm.Delta{{Content: "warm tungsten", FinishReason: "stop"}},
+		seen:   &seen,
+	})
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	project, err := s.Projects.Create("Refs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jpeg := "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAIBAQEBAQIBAQECAgICAgQDAgICAgUEBAMEBgUGBgYFBgYGBwkIBgcJBwYGCAsICQoKCgoKBggLDAsKDAkKCgr/2wBDAQICAgICAgUDAwUKBwYHCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgr/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4+Tl5ufo6erx8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD4vooor+Uz/fw//9k="
+	body := `{"project_id":"` + project.ID + `","message":"match this look","images":[{"name":"ref.jpg","mime":"image/jpeg","data":"` + jpeg + `"}]}`
+	resp, err := http.Post(ts.URL+"/v1/agent/chat", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%s", resp.Status)
+	}
+	if len(seen.Messages) == 0 {
+		t.Fatal("no messages sent to the model")
+	}
+	var user llm.Message
+	for _, msg := range seen.Messages {
+		if msg.Role == llm.RoleUser {
+			user = msg
+		}
+	}
+	if user.Content != "match this look" || len(user.Images) != 1 || user.Images[0].Data == "" {
+		t.Fatalf("user=%+v", user)
+	}
+	if _, err := os.Stat(filepath.Join(project.Dir, filepath.FromSlash(user.Images[0].Path))); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestChatRegistersGenerateImage(t *testing.T) {
 	var seen llm.Request
 	s := testServer(t, fakeProvider{

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -140,8 +141,20 @@ type chatRequest struct {
 	ProfileID      string        `json:"profile_id"`
 	Message        string        `json:"message"`
 	Messages       []llm.Message `json:"messages"`
+	Images         []chatImageIn `json:"images"`
 	ThinkingEffort string        `json:"thinking_effort"`
 }
+
+type chatImageIn struct {
+	Name string `json:"name"`
+	MIME string `json:"mime"`
+	Data string `json:"data"`
+}
+
+const (
+	maxChatImages     = 6
+	maxChatImageBytes = 8 << 20
+)
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	requestStartedAt := time.Now()
@@ -153,7 +166,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userText := strings.TrimSpace(req.Message)
-	if userText == "" && len(req.Messages) == 0 {
+	if userText == "" && len(req.Messages) == 0 && len(req.Images) == 0 {
 		writeError(w, http.StatusBadRequest, "message is required")
 		return
 	}
@@ -175,6 +188,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	toolRegistry := s.Tools
 	projectID := strings.TrimSpace(req.ProjectID)
+	attached, attachErr := s.saveChatImages(projectID, req.Images)
+	if attachErr != nil {
+		writeError(w, http.StatusBadRequest, attachErr.Error())
+		return
+	}
 	var timelineTx *projects.TimelineTransaction
 	if projectID != "" {
 		if s.Projects == nil {
@@ -187,8 +205,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		toolRegistry = tools.NewRegistry()
+		summary := userText
+		if summary == "" && len(attached) > 0 {
+			summary = "Attached image"
+		}
 		timelineTx, err = s.Projects.BeginTimelineTransaction(projectID, projects.CommitMeta{
-			Actor: "agent", Summary: userText, ChatID: strings.TrimSpace(req.SessionID),
+			Actor: "agent", Summary: summary, ChatID: strings.TrimSpace(req.SessionID),
 		})
 		if err != nil {
 			writeProjectError(w, err)
@@ -266,13 +288,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			msgs = append(msgs, m)
 		}
 	}
-	if userText != "" {
+	if userText != "" || len(attached) > 0 {
 		lastUser := false
-		if n := len(msgs); n > 0 && msgs[n-1].Role == llm.RoleUser && msgs[n-1].Content == userText {
+		if n := len(msgs); n > 0 && msgs[n-1].Role == llm.RoleUser && msgs[n-1].Content == userText && len(msgs[n-1].Images) == 0 && len(attached) == 0 {
 			lastUser = true
 		}
 		if !lastUser {
-			msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: userText})
+			msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: userText, Images: attached})
 		}
 	}
 	if projectID != "" {
@@ -296,6 +318,16 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		c.ExtraHeaders["x-grok-conv-id"] = sess.ID
 	}
 	var traceEvents []projects.ChatTraceEvent
+
+	if projectID != "" && s.Projects != nil {
+		msgs = llm.HydrateMessageImages(msgs, func(rel string) ([]byte, error) {
+			abs, err := s.Projects.ResolveFile(projectID, rel)
+			if err != nil {
+				return nil, err
+			}
+			return os.ReadFile(abs)
+		})
+	}
 
 	ag := &agent.Agent{
 		Provider: provider,

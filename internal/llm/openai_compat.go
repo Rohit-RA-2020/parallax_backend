@@ -44,12 +44,20 @@ func NewCompatClient(baseURL, apiKey, model string) *CompatClient {
 
 type wireRequest struct {
 	Model           string         `json:"model"`
-	Messages        []Message      `json:"messages"`
+	Messages        []wireMessage  `json:"messages"`
 	Tools           []ToolSpec     `json:"tools,omitempty"`
 	ToolChoice      any            `json:"tool_choice,omitempty"`
 	Stream          bool           `json:"stream"`
 	Temperature     *float64       `json:"temperature,omitempty"`
 	ReasoningEffort ThinkingEffort `json:"reasoning_effort,omitempty"`
+}
+
+type wireMessage struct {
+	Role       Role            `json:"role"`
+	Content    json.RawMessage `json:"content,omitempty"`
+	Name       string          `json:"name,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
 }
 
 type wireError struct {
@@ -93,7 +101,7 @@ func (c *CompatClient) Stream(ctx context.Context, req Request) (<-chan Delta, e
 
 	body, err := json.Marshal(wireRequest{
 		Model:           c.Model,
-		Messages:        sanitizeMessages(req.Messages),
+		Messages:        EncodeChatMessages(req.Messages),
 		Tools:           req.Tools,
 		ToolChoice:      req.ToolChoice,
 		Stream:          true,
@@ -166,7 +174,7 @@ func (c *CompatClient) Complete(ctx context.Context, req Request) (string, error
 
 	body, err := json.Marshal(wireRequest{
 		Model:           c.Model,
-		Messages:        sanitizeMessages(req.Messages),
+		Messages:        EncodeChatMessages(req.Messages),
 		Temperature:     req.Temperature,
 		ReasoningEffort: req.ReasoningEffort,
 		Stream:          false,

@@ -19,13 +19,28 @@ const (
 )
 
 // Message is the OpenAI-compatible chat message used both on the wire and
-// inside the agent loop.
+// inside the agent loop. Images stay as path metadata on disk; Data is filled
+// only when the message is sent to a vision model.
 type Message struct {
 	Role       Role       `json:"role"`
 	Content    string     `json:"content,omitempty"`
 	Name       string     `json:"name,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	Images     []ImageRef `json:"images,omitempty"`
+}
+
+// ImageRef is a still attached to a user message.
+type ImageRef struct {
+	Path string `json:"path,omitempty"`
+	MIME string `json:"mime,omitempty"`
+	Name string `json:"name,omitempty"`
+	URL  string `json:"url,omitempty"`
+	Data string `json:"-"`
+}
+
+func (m Message) HasImages() bool {
+	return len(m.Images) > 0
 }
 
 // ToolCall is a completed function invocation requested by the model.

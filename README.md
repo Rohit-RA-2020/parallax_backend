@@ -168,7 +168,11 @@ scoped to that directory for the whole session.
 | `POST` | `/v1/projects/{id}/checkpoints` | Name the current or selected revision |
 
 Include `project_id` and `session_id` (the chat id) in `/v1/agent/chat`
-requests. The agent only sees files inside that project's workspace. Director
+requests. Optional `images` is an array of `{name, mime, data}` stills
+(base64 or data URLs). They are saved under `.parallax/chat-media/`, shown
+in the chat, and sent to the model as Chat Completions `image_url` parts so
+vision-capable models can see them. The agent only sees workspace files
+through tools; chat attachments are vision context, not bin items. Director
 timeline and media changes are staged for the request and commit as one
 revision. Timeline-representable edits remain non-destructive. FFmpeg
 fallbacks keep one logical bin item while content-addressed objects preserve

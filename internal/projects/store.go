@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"parallax/internal/llm"
 )
 
 var ErrNotFound = errors.New("project not found")
@@ -176,6 +178,58 @@ func (s *Store) SaveUpload(id, originalName string, src io.Reader) (Media, error
 		return Media{}, err
 	}
 	return mediaFromFile(p.Dir, dst)
+}
+
+func (s *Store) SaveChatImage(id, originalName, mime string, data []byte) (llm.ImageRef, error) {
+	p, err := s.Get(id)
+	if err != nil {
+		return llm.ImageRef{}, err
+	}
+	if !llm.LooksLikeImage(data) {
+		return llm.ImageRef{}, errors.New("file is not a readable image")
+	}
+	if mime == "" {
+		mime = llm.DetectImageMIME(data)
+	}
+	name := safeName(originalName)
+	if name == "" {
+		name = "image"
+	}
+	ext := strings.ToLower(filepath.Ext(name))
+	want := extForImageMIME(mime)
+	if ext == "" || kindForExt(ext) != "image" {
+		name = strings.TrimSuffix(name, ext) + want
+	}
+	dir := filepath.Join(p.Dir, ".parallax", "chat-media")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return llm.ImageRef{}, err
+	}
+	dst := availablePath(dir, name)
+	if err := os.WriteFile(dst, data, 0o600); err != nil {
+		return llm.ImageRef{}, err
+	}
+	rel, err := filepath.Rel(p.Dir, dst)
+	if err != nil {
+		return llm.ImageRef{}, err
+	}
+	return llm.ImageRef{
+		Path: filepath.ToSlash(rel),
+		MIME: mime,
+		Name: filepath.Base(dst),
+	}, nil
+}
+
+func extForImageMIME(mime string) string {
+	switch strings.ToLower(strings.TrimSpace(mime)) {
+	case "image/png":
+		return ".png"
+	case "image/webp":
+		return ".webp"
+	case "image/gif":
+		return ".gif"
+	default:
+		return ".jpg"
+	}
 }
 
 func (s *Store) ListMedia(id string) ([]Media, error) {

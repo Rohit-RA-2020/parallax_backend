@@ -11,6 +11,43 @@ import (
 	. "parallax/internal/llm"
 )
 
+func TestStreamSendsVisionContent(t *testing.T) {
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	client := NewCompatClient(server.URL+"/v1", "key", "grok-4.6")
+	ch, err := client.Stream(context.Background(), Request{Messages: []Message{{
+		Role:    RoleUser,
+		Content: "Match this grade",
+		Images:  []ImageRef{{MIME: "image/jpeg", Data: "abc123"}},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range ch {
+	}
+	msgs, _ := got["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Fatalf("messages=%#v", got["messages"])
+	}
+	content, _ := msgs[0].(map[string]any)["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("content=%#v", msgs[0])
+	}
+	image, _ := content[1].(map[string]any)["image_url"].(map[string]any)
+	if content[1].(map[string]any)["type"] != "image_url" || image["url"] != "data:image/jpeg;base64,abc123" {
+		t.Fatalf("image=%#v", content[1])
+	}
+}
+
 func TestCompletionsURL(t *testing.T) {
 	cases := map[string]string{
 		"https://api.x.ai/v1":                  "https://api.x.ai/v1/chat/completions",
