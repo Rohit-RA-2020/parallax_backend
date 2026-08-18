@@ -53,6 +53,8 @@ type Config struct {
 	MaxIters         int
 	FFmpegBin        string
 	FFprobeBin       string
+	FFmpegHWAccel    string
+	FFmpegHWDevice   string
 	LLMs             []LLM
 	Embedding        Embedding
 	QdrantURL        string
@@ -107,6 +109,8 @@ func Load() (Config, error) {
 		MaxIters:         envInt("PARALLAX_MAX_ITERS", DefaultMaxIters),
 		FFmpegBin:        envOr("FFMPEG_BIN", "ffmpeg"),
 		FFprobeBin:       envOr("FFPROBE_BIN", "ffprobe"),
+		FFmpegHWAccel:    strings.ToLower(envOr("FFMPEG_HWACCEL", "auto")),
+		FFmpegHWDevice:   strings.TrimSpace(os.Getenv("FFMPEG_HWDEVICE")),
 		LLMs:             LoadLLMProfiles(),
 		Embedding: Embedding{
 			BaseURL: strings.TrimRight(strings.TrimSpace(os.Getenv("EMBEDDING_BASE_URL")), "/"),

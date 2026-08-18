@@ -32,6 +32,16 @@ The agent is a plain `for` loop in `internal/agent`. The only LLM dependency is 
 
 FFmpeg is never executed as a shell string. Commands arrive as structured tool arguments (`args: [...]`), get validated (binary, metacharacters, workspace paths), and run with `exec.CommandContext`.
 
+At startup the server probes ffmpeg plus the host GPUs and, when a backend
+actually encodes a test frame, rewrites software video codecs (`libx264`,
+`libx265`, `libvpx-vp9`, SVT/AOM AV1) to that encoder for exports, caption
+burns, and `run_ffmpeg`. NVIDIA NVENC is preferred when present; then
+VideoToolbox, Intel QSV, then VAAPI. Filter-heavy graphs stay in system
+memory and only the encode steps onto the GPU (NVENC accepts those frames
+directly). A failed GPU encode retries on CPU. Set `FFMPEG_HWACCEL=off` to
+disable, or pin `cuda` / `vaapi` / `qsv` / `videotoolbox`. `FFMPEG_HWDEVICE`
+selects a GPU index or `/dev/dri/renderD*` node.
+
 ## Configure the LLM
 
 Models are declared in `.env`. The editor can only select among those entries.

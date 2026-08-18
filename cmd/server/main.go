@@ -30,15 +30,40 @@ func main() {
 		log.Error("config", "err", err)
 		os.Exit(1)
 	}
+
+	bins := ffmpeg.Bins{
+		FFmpeg:  cfg.FFmpegBin,
+		FFprobe: cfg.FFprobeBin,
+	}
+	detectCtx, detectCancel := context.WithTimeout(context.Background(), 45*time.Second)
+	bins.Accel = ffmpeg.DetectAccel(detectCtx, bins, ffmpeg.DetectOpts{
+		Prefer: cfg.FFmpegHWAccel,
+		Device: cfg.FFmpegHWDevice,
+	})
+	detectCancel()
+	if bins.Accel.Enabled() {
+		log.Info("ffmpeg gpu encode enabled",
+			"backend", bins.Accel.Backend,
+			"device", bins.Accel.Device,
+			"label", bins.Accel.Label,
+			"h264", bins.Accel.H264,
+			"hevc", bins.Accel.HEVC,
+			"vp9", bins.Accel.VP9,
+			"av1", bins.Accel.AV1,
+		)
+	} else {
+		log.Info("ffmpeg gpu encode disabled", "prefer", cfg.FFmpegHWAccel)
+	}
+
 	systemPrompt := agent.SystemPromptAt(time.Now())
+	if note := bins.Accel.PromptNote(); note != "" {
+		systemPrompt += "\n" + note
+	}
 
 	reg := tools.NewRegistry()
 	tools.RegisterMedia(reg, tools.MediaEnv{
 		Workspace: cfg.WorkspaceDir,
-		Bins: ffmpeg.Bins{
-			FFmpeg:  cfg.FFmpegBin,
-			FFprobe: cfg.FFprobeBin,
-		},
+		Bins:      bins,
 	})
 	tools.RegisterWeb(reg, tools.WebEnv{APIKey: cfg.ExaAPIKey, BaseURL: cfg.ExaBaseURL})
 	tools.RegisterImage(reg, tools.ImageEnv{
@@ -51,11 +76,6 @@ func main() {
 	if err != nil {
 		log.Error("projects", "err", err)
 		os.Exit(1)
-	}
-
-	bins := ffmpeg.Bins{
-		FFmpeg:  cfg.FFmpegBin,
-		FFprobe: cfg.FFprobeBin,
 	}
 	settings := config.NewStore(cfg.SettingsPath, cfg.LLMs)
 	idx := &transcript.Indexer{

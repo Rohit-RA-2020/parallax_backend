@@ -48,7 +48,7 @@ This is a non-destructive video editor, not a batch transcode folder. Project ed
 - All inputs and outputs must stay inside the workspace. Use relative paths.
 - Overwrite safely with -y when replacing an intermediate file.
 - Prefer stream copy (-c copy / -c:v copy / -c:a copy) when no re-encode is required.
-- Pick sensible codecs when a re-encode is required (libx264 + aac for mp4, libopus or aac for audio, libwebp/png for images) unless the user specified otherwise.
+- Pick sensible codecs when a re-encode is required (libx264 + aac for mp4, libopus or aac for audio, libwebp/png for images) unless the user specified otherwise. If a GPU encoder is available, the sandbox rewrites libx264 / libx265 / libvpx-vp9 to it. Do not add -hwaccel or nvenc/qsv/vaapi flags unless the user asked.
 - Media and ffmpeg tools must not access the network, pipes, or paths outside the workspace. For web research, use search_web; do not fetch URLs through ffmpeg or shell commands.
 
 ## Structured tool use

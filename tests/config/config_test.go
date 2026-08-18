@@ -129,6 +129,24 @@ func TestResolveWhisperPathsFromRepoRoot(t *testing.T) {
 	}
 }
 
+func TestLoadFFmpegHWAccel(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PARALLAX_WORKSPACE", filepath.Join(dir, "ws"))
+	t.Setenv("PARALLAX_DATA", filepath.Join(dir, "data"))
+	t.Setenv("FFMPEG_HWACCEL", "off")
+	t.Setenv("FFMPEG_HWDEVICE", "/dev/dri/renderD128")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FFmpegHWAccel != "off" {
+		t.Fatalf("hwaccel=%q", cfg.FFmpegHWAccel)
+	}
+	if cfg.FFmpegHWDevice != "/dev/dri/renderD128" {
+		t.Fatalf("hwdevice=%q", cfg.FFmpegHWDevice)
+	}
+}
+
 func TestLoadEmbeddingQdrantAndWhisper(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PARALLAX_WORKSPACE", filepath.Join(dir, "ws"))

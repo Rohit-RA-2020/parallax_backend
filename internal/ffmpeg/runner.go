@@ -9,10 +9,11 @@ import (
 	"time"
 )
 
-// Bins holds resolved ffmpeg / ffprobe executables.
+// Bins holds resolved ffmpeg / ffprobe executables and optional GPU encode.
 type Bins struct {
 	FFmpeg  string
 	FFprobe string
+	Accel   Accel
 }
 
 func (b Bins) path(kind Kind) string {
@@ -41,11 +42,34 @@ type Result struct {
 }
 
 // Run executes a validated command with cmd.Dir set to the workspace.
-// It never invokes a shell.
+// It never invokes a shell. When a GPU encoder is selected, software
+// video codecs are rewritten and a failed GPU encode retries on CPU.
 func Run(ctx context.Context, bins Bins, cmd Command, workspace string, timeout time.Duration) (Result, error) {
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
 	}
+	if cmd.Kind == KindFFmpeg && bins.Accel.Enabled() {
+		if rewritten, ok := RewriteSoftwareEncode(cmd.Args, bins.Accel); ok {
+			hwCmd := Command{Kind: cmd.Kind, Args: rewritten}
+			res, err := runOnce(ctx, bins, hwCmd, workspace, timeout)
+			if err == nil {
+				return res, nil
+			}
+			if ctx.Err() != nil {
+				return res, err
+			}
+			cpu, cpuErr := runOnce(ctx, bins, cmd, workspace, timeout)
+			if cpuErr == nil {
+				cpu.Stderr = "gpu encode failed; retried on cpu\n" + lastLines(res.Stderr, 8) + "\n" + cpu.Stderr
+				return cpu, nil
+			}
+			return res, fmt.Errorf("%w (cpu fallback also failed: %v)", err, cpuErr)
+		}
+	}
+	return runOnce(ctx, bins, cmd, workspace, timeout)
+}
+
+func runOnce(ctx context.Context, bins Bins, cmd Command, workspace string, timeout time.Duration) (Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
