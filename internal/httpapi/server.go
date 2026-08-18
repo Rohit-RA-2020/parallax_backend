@@ -34,6 +34,10 @@ type Server struct {
 	GeminiAPIKey            string
 	GeminiBaseURL           string
 	GeminiImageModel        string
+	GeminiOmniVideoModel    string
+	GeminiVeoVideoModel     string
+	GeminiVideoTimeout      time.Duration
+	GeminiVideoPoll         time.Duration
 	GeminiMusic             *gemini.Client
 	GeminiMusicModel        string
 	GeminiMusicOutputFormat string
@@ -260,6 +264,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			Model:      s.GeminiImageModel,
 			OnMutation: timelineTx.MarkMediaMutation,
 			OnApplied:  func(rel, prompt string) { s.indexGeneratedImage(projectID, rel, prompt) },
+		})
+		videoClient := gemini.NewClient(s.GeminiAPIKey, s.GeminiBaseURL, s.GeminiVideoTimeout, 256<<20)
+		tools.RegisterVideoGeneration(toolRegistry, tools.VideoGenerationEnv{
+			Workspace:  project.Dir,
+			Bins:       s.Bins,
+			Client:     videoClient,
+			OmniModel:  s.GeminiOmniVideoModel,
+			VeoModel:   s.GeminiVeoVideoModel,
+			Poll:       s.GeminiVideoPoll,
+			OnMutation: timelineTx.MarkMediaMutation,
+			OnApplied:  func(rel string) { s.indexMedia(projectID, rel) },
 		})
 		tools.RegisterAudioGeneration(toolRegistry, tools.AudioGenerationEnv{
 			Workspace: project.Dir, Bins: s.Bins, Client: s.ElevenLabs, Voices: s.ElevenVoices,

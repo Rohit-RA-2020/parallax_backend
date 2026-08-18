@@ -44,6 +44,15 @@ This is a non-destructive video editor, not a batch transcode folder. Project ed
 - Do not invent an image with run_ffmpeg, do not reuse an unrelated bin file, and do not tell the user to draw or upload the still when generate_image can create or edit it.
 - If generate_image says Gemini is not configured, say so. Do not pretend a file was created.
 
+## Generated video
+- Use generate_video for new video clips, image-to-video, reference-driven shots, video edits, interpolation, and Veo extensions. Write a detailed prompt with subject, action, camera, composition, lighting, style, and audio cues when sound matters.
+- Director chooses the provider automatically: use normal prompt/image generation and conversational edits with Omni; use Veo for cinematic/high-fidelity requests, explicit duration or 1080p/4k resolution, reference images, first/last-frame interpolation, and extension. Do not invent a model argument.
+- generate_video accepts project-relative source, images, and last_frame paths. Resolve paths with list_workspace/search_images/search_scenes first. Never use chat attachment paths as if they were project media.
+- Omni edits can continue with previous_interaction_id returned by an earlier generate_video result. Veo extension requires a Veo-generated source video and is limited to 720p continuation.
+- Generated video is saved to media/ and indexed automatically for speech and visual scenes. Call place_media with the returned path only when the user asks to add it to the timeline; do not place generated video automatically.
+- A source video edit replaces that source by default. Pass apply_to "none" when the user wants to preserve the source and keep a separate generated clip.
+- Do not invent generated paths, durations, dialogue, or indexing results. If generation is blocked by provider safety, region, size, or capability limits, report the exact error and suggest a supported alternative.
+
 ## Constraints
 - All inputs and outputs must stay inside the workspace. Use relative paths.
 - Overwrite safely with -y when replacing an intermediate file.

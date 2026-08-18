@@ -53,6 +53,10 @@ type Config struct {
 	GeminiImageModel           string
 	GeminiMusicModel           string
 	GeminiMusicOutputFormat    string
+	GeminiOmniVideoModel       string
+	GeminiVeoVideoModel        string
+	GeminiVideoTimeout         time.Duration
+	GeminiVideoPoll            time.Duration
 	ElevenLabsAPIKey           string
 	ElevenLabsBaseURL          string
 	ElevenLabsTTSModel         string
@@ -121,6 +125,10 @@ func Load() (Config, error) {
 		GeminiImageModel:           envOr("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image"),
 		GeminiMusicModel:           envOr("GEMINI_MUSIC_MODEL", "lyria-3-pro-preview"),
 		GeminiMusicOutputFormat:    envOr("GEMINI_MUSIC_OUTPUT_FORMAT", "mp3"),
+		GeminiOmniVideoModel:       envOr("GEMINI_OMNI_VIDEO_MODEL", "gemini-omni-flash-preview"),
+		GeminiVeoVideoModel:        envOr("GEMINI_VEO_VIDEO_MODEL", "veo-3.1-generate-preview"),
+		GeminiVideoTimeout:         time.Duration(envInt("GEMINI_VIDEO_TIMEOUT_SECONDS", 900)) * time.Second,
+		GeminiVideoPoll:            time.Duration(envInt("GEMINI_VIDEO_POLL_SECONDS", 5)) * time.Second,
 		ElevenLabsAPIKey:           strings.TrimSpace(os.Getenv("ELEVENLABS_API_KEY")),
 		ElevenLabsBaseURL:          strings.TrimRight(envOr("ELEVENLABS_BASE_URL", "https://api.elevenlabs.io"), "/"),
 		ElevenLabsTTSModel:         envOr("ELEVENLABS_TTS_MODEL", "eleven_v3"),
@@ -162,6 +170,12 @@ func Load() (Config, error) {
 	}
 	if cfg.ElevenLabsMaxResponseBytes < 1<<20 {
 		cfg.ElevenLabsMaxResponseBytes = 256 << 20
+	}
+	if cfg.GeminiVideoTimeout < time.Second {
+		cfg.GeminiVideoTimeout = 15 * time.Minute
+	}
+	if cfg.GeminiVideoPoll < time.Second {
+		cfg.GeminiVideoPoll = 5 * time.Second
 	}
 
 	if err := os.MkdirAll(cfg.WorkspaceDir, 0o755); err != nil {
