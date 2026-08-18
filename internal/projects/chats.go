@@ -181,6 +181,7 @@ func (s *Store) SaveChatMessages(projectID, chatID string, msgs []llm.Message) (
 		return Chat{}, err
 	}
 	chat.Messages = append([]llm.Message(nil), msgs...)
+	pruneChatMetadata(&chat)
 	chat.UpdatedAt = time.Now().UTC()
 	if title := chatTitle(chat.Title, msgs); title != chat.Title {
 		chat.Title = title
@@ -415,6 +416,34 @@ func firstLineTitle(s string) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func pruneChatMetadata(chat *Chat) {
+	limit := len(chat.Messages)
+	pruneIndexMap(chat.ResponseDurations, limit)
+	if chat.ResponseTraces != nil {
+		for key := range chat.ResponseTraces {
+			index, err := strconv.Atoi(key)
+			if err != nil || index < 0 || index >= limit {
+				delete(chat.ResponseTraces, key)
+			}
+		}
+		if len(chat.ResponseTraces) == 0 {
+			chat.ResponseTraces = nil
+		}
+	}
+}
+
+func pruneIndexMap(values map[string]int64, limit int) {
+	if values == nil {
+		return
+	}
+	for key := range values {
+		index, err := strconv.Atoi(key)
+		if err != nil || index < 0 || index >= limit {
+			delete(values, key)
+		}
+	}
 }
 
 func PublicChatMessages(projectID string, msgs []llm.Message, durations map[string]int64, traces map[string][]ChatTraceEvent) []map[string]any {

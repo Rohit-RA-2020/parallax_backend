@@ -43,13 +43,14 @@ func NewCompatClient(baseURL, apiKey, model string) *CompatClient {
 }
 
 type wireRequest struct {
-	Model           string         `json:"model"`
-	Messages        []wireMessage  `json:"messages"`
-	Tools           []ToolSpec     `json:"tools,omitempty"`
-	ToolChoice      any            `json:"tool_choice,omitempty"`
-	Stream          bool           `json:"stream"`
-	Temperature     *float64       `json:"temperature,omitempty"`
-	ReasoningEffort ThinkingEffort `json:"reasoning_effort,omitempty"`
+	Model           string           `json:"model"`
+	Messages        []wireMessage    `json:"messages"`
+	Tools           []ToolSpec       `json:"tools,omitempty"`
+	ToolChoice      any              `json:"tool_choice,omitempty"`
+	Stream          bool             `json:"stream"`
+	Temperature     *float64         `json:"temperature,omitempty"`
+	ReasoningEffort ThinkingEffort   `json:"reasoning_effort,omitempty"`
+	ExtraBody       *geminiExtraBody `json:"extra_body,omitempty"`
 }
 
 type wireMessage struct {
@@ -75,9 +76,14 @@ type wireChunk struct {
 	Choices []struct {
 		Index int `json:"index"`
 		Delta struct {
-			Role      string          `json:"role"`
-			Content   *string         `json:"content"`
-			ToolCalls []ToolCallDelta `json:"tool_calls"`
+			Role             string          `json:"role"`
+			Content          *string         `json:"content"`
+			ToolCalls        []ToolCallDelta `json:"tool_calls"`
+			ReasoningContent *string         `json:"reasoning_content"`
+			Reasoning        json.RawMessage `json:"reasoning"`
+			Thinking         json.RawMessage `json:"thinking"`
+			ReasoningDetails json.RawMessage `json:"reasoning_details"`
+			ExtraContent     json.RawMessage `json:"extra_content"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
@@ -99,15 +105,7 @@ func (c *CompatClient) Stream(ctx context.Context, req Request) (<-chan Delta, e
 		return nil, fmt.Errorf("llm: base_url is not configured")
 	}
 
-	body, err := json.Marshal(wireRequest{
-		Model:           c.Model,
-		Messages:        EncodeChatMessages(req.Messages),
-		Tools:           req.Tools,
-		ToolChoice:      req.ToolChoice,
-		Stream:          true,
-		Temperature:     req.Temperature,
-		ReasoningEffort: req.ReasoningEffort,
-	})
+	body, err := json.Marshal(c.encodeStreamRequest(req))
 	if err != nil {
 		return nil, err
 	}
@@ -355,6 +353,7 @@ func parseSSE(r io.Reader, out chan<- Delta) error {
 	sc.Buffer(buf, 1<<20)
 
 	var data lines
+	var split thoughtSplitter
 	flush := func() error {
 		payload := data.Join()
 		data = data[:0]
@@ -374,12 +373,26 @@ func parseSSE(r io.Reader, out chan<- Delta) error {
 			if ch.Delta.Content != nil {
 				d.Content = *ch.Delta.Content
 			}
+			d.Reasoning = extractReasoning(ch.Delta.ReasoningContent, ch.Delta.Reasoning, ch.Delta.Thinking, ch.Delta.ReasoningDetails)
+			applyGeminiThought(&d, ch.Delta.ExtraContent)
+			if d.Reasoning != "" {
+				var inner thoughtSplitter
+				inner.inThought = true
+				cleaned, leaked := inner.Feed(d.Reasoning)
+				d.Reasoning = cleaned
+				if leaked != "" {
+					d.Content = leaked + d.Content
+				}
+			}
+			tagged, visible := split.Feed(d.Content)
+			d.Reasoning += tagged
+			d.Content = visible
 			d.ToolCalls = ch.Delta.ToolCalls
 			if ch.FinishReason != nil {
 				d.FinishReason = *ch.FinishReason
 			}
 		}
-		if d.Content == "" && len(d.ToolCalls) == 0 && d.FinishReason == "" && d.Usage == nil {
+		if d.Content == "" && d.Reasoning == "" && len(d.ToolCalls) == 0 && d.FinishReason == "" && d.Usage == nil {
 			return nil
 		}
 		out <- d
@@ -428,6 +441,59 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+func extractReasoning(content *string, reasoning, thinking, details json.RawMessage) string {
+	if content != nil && *content != "" {
+		return *content
+	}
+	if text := reasoningText(reasoning); text != "" {
+		return text
+	}
+	if text := reasoningText(thinking); text != "" {
+		return text
+	}
+	return reasoningDetailsText(details)
+}
+
+func reasoningText(raw json.RawMessage) string {
+	if len(bytes.TrimSpace(raw)) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text
+	}
+	var obj map[string]any
+	if json.Unmarshal(raw, &obj) != nil {
+		return ""
+	}
+	for _, key := range []string{"content", "text", "summary"} {
+		if value, ok := obj[key].(string); ok && value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func reasoningDetailsText(raw json.RawMessage) string {
+	if len(bytes.TrimSpace(raw)) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var items []map[string]any
+	if json.Unmarshal(raw, &items) != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, item := range items {
+		for _, key := range []string{"text", "content", "summary"} {
+			if value, ok := item[key].(string); ok && value != "" {
+				b.WriteString(value)
+				break
+			}
+		}
+	}
+	return b.String()
 }
 
 type toolCallAcc struct {

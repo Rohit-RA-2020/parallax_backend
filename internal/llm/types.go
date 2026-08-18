@@ -116,6 +116,7 @@ func NormalizeThinkingEffort(value string) (ThinkingEffort, error) {
 // Delta is one incremental piece of a streamed completion.
 type Delta struct {
 	Content      string
+	Reasoning    string
 	ToolCalls    []ToolCallDelta
 	FinishReason string
 	Usage        *Usage

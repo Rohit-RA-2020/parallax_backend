@@ -309,7 +309,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	if userText != "" || len(attached) > 0 {
 		lastUser := false
-		if n := len(msgs); n > 0 && msgs[n-1].Role == llm.RoleUser && msgs[n-1].Content == userText && len(msgs[n-1].Images) == 0 && len(attached) == 0 {
+		if n := len(msgs); n > 0 && msgs[n-1].Role == llm.RoleUser && msgs[n-1].Content == userText && len(attached) == 0 {
 			lastUser = true
 		}
 		if !lastUser {
@@ -360,7 +360,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		ThinkingEffort: thinkingEffort,
 	}, func(ev agent.Event) {
 		if ev.Type != agent.EventText && ev.Type != agent.EventSession && ev.Type != agent.EventProjectChanged {
-			traceEvents = append(traceEvents, projects.ChatTraceEvent{Type: string(ev.Type), Data: append([]byte(nil), ev.Data...)})
+			traceEvents = appendTraceEvent(traceEvents, ev)
 		}
 		_ = stream.Event(ev)
 	})
@@ -387,6 +387,49 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = s.Projects.Touch(projectID)
 	}
+}
+
+func appendTraceEvent(events []projects.ChatTraceEvent, ev agent.Event) []projects.ChatTraceEvent {
+	if ev.Type != agent.EventThinking {
+		return append(events, projects.ChatTraceEvent{Type: string(ev.Type), Data: append([]byte(nil), ev.Data...)})
+	}
+	var incoming agent.ThinkingPayload
+	if json.Unmarshal(ev.Data, &incoming) != nil {
+		return events
+	}
+	if incoming.Delta == "" && incoming.Text == "" {
+		return events
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type != string(agent.EventThinking) {
+			continue
+		}
+		var existing agent.ThinkingPayload
+		if json.Unmarshal(events[i].Data, &existing) != nil || existing.Iteration != incoming.Iteration {
+			break
+		}
+		if incoming.Text != "" {
+			existing.Text = incoming.Text
+		} else {
+			existing.Text += incoming.Delta
+		}
+		existing.Delta = ""
+		raw, err := json.Marshal(existing)
+		if err != nil {
+			return events
+		}
+		events[i].Data = raw
+		return events
+	}
+	stored := agent.ThinkingPayload{Text: incoming.Text, Iteration: incoming.Iteration}
+	if stored.Text == "" {
+		stored.Text = incoming.Delta
+	}
+	raw, err := json.Marshal(stored)
+	if err != nil {
+		return events
+	}
+	return append(events, projects.ChatTraceEvent{Type: string(ev.Type), Data: raw})
 }
 
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {

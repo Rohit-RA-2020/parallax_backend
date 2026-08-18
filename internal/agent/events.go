@@ -9,6 +9,7 @@ const (
 	EventSession        EventType = "session"
 	EventStep           EventType = "step"
 	EventText           EventType = "text"
+	EventThinking       EventType = "thinking"
 	EventToolCall       EventType = "tool_call"
 	EventToolResult     EventType = "tool_result"
 	EventDone           EventType = "done"
@@ -43,6 +44,12 @@ type StepPayload struct {
 
 type TextPayload struct {
 	Delta string `json:"delta"`
+}
+
+type ThinkingPayload struct {
+	Delta     string `json:"delta,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Iteration int    `json:"iteration"`
 }
 
 type ToolCallPayload struct {

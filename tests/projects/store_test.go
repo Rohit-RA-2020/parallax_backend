@@ -125,6 +125,52 @@ func TestChatsPersistAcrossReload(t *testing.T) {
 	}
 }
 
+func TestSaveChatMessagesDropsStaleResponseMetadata(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := store.Create("Retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat, err := store.CreateChat(p.ID, "Retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	long := []llm.Message{
+		{Role: llm.RoleSystem, Content: "sys"},
+		{Role: llm.RoleUser, Content: "first"},
+		{Role: llm.RoleAssistant, Content: "one"},
+		{Role: llm.RoleUser, Content: "second"},
+		{Role: llm.RoleAssistant, Content: "two"},
+	}
+	if _, err := store.SaveChatMessages(p.ID, chat.ID, long); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChatResponseMetadata(p.ID, chat.ID, long, 1200, []ChatTraceEvent{{Type: "done"}}); err != nil {
+		t.Fatal(err)
+	}
+	short := long[:3]
+	if _, err := store.SaveChatMessages(p.ID, chat.ID, short); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.GetChat(p.ID, chat.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Messages) != 3 {
+		t.Fatalf("messages=%d", len(loaded.Messages))
+	}
+	if _, ok := loaded.ResponseDurations["4"]; ok {
+		t.Fatalf("stale duration kept: %+v", loaded.ResponseDurations)
+	}
+	if _, ok := loaded.ResponseTraces["4"]; ok {
+		t.Fatalf("stale trace kept: %+v", loaded.ResponseTraces)
+	}
+}
+
 func TestDeleteProjectRemovesWorkspace(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewStore(root)

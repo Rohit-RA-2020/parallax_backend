@@ -414,6 +414,106 @@ func TestCompatClientStream(t *testing.T) {
 	}
 }
 
+func TestCompatClientStreamsReasoningContent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Check the \"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"reasoning\":\"timeline first.\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"Done.\",\"reasoning\":{\"text\":\" Then cut.\"}},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	c := NewCompatClient(srv.URL+"/v1", "test-key", "grok-4.6")
+	c.HTTPClient = srv.Client()
+	ch, err := c.Stream(context.Background(), Request{
+		Messages: []Message{{Role: RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var thought, text strings.Builder
+	for d := range ch {
+		if d.Err != nil {
+			t.Fatal(d.Err)
+		}
+		thought.WriteString(d.Reasoning)
+		text.WriteString(d.Content)
+	}
+	if thought.String() != "Check the timeline first. Then cut." {
+		t.Fatalf("reasoning=%q", thought.String())
+	}
+	if text.String() != "Done." {
+		t.Fatalf("content=%q", text.String())
+	}
+}
+
+func TestCompatClientStreamsGeminiThoughtExtraContent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"content":"Inspect the cut.","extra_content":{"google":{"thought":true}}}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"content":"Done.","extra_content":{"google":{"thought_signature":"abc"}}},"finish_reason":"stop"}]}` + "\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	c := NewCompatClient(srv.URL+"/v1", "key", "gemini-3.7-flash")
+	c.HTTPClient = srv.Client()
+	ch, err := c.Stream(context.Background(), Request{
+		Messages: []Message{{Role: RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var thought, text strings.Builder
+	for d := range ch {
+		if d.Err != nil {
+			t.Fatal(d.Err)
+		}
+		thought.WriteString(d.Reasoning)
+		text.WriteString(d.Content)
+	}
+	if thought.String() != "Inspect the cut." {
+		t.Fatalf("reasoning=%q", thought.String())
+	}
+	if text.String() != "Done." {
+		t.Fatalf("content=%q", text.String())
+	}
+}
+
+func TestCompatClientSplitsThoughtTagsInContent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"<thought>Plan the cut.\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"</thought>Here is the recut.\"},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	c := NewCompatClient(srv.URL+"/v1", "key", "gemini-3.7-flash")
+	c.HTTPClient = srv.Client()
+	ch, err := c.Stream(context.Background(), Request{
+		Messages: []Message{{Role: RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var thought, text strings.Builder
+	for d := range ch {
+		if d.Err != nil {
+			t.Fatal(d.Err)
+		}
+		thought.WriteString(d.Reasoning)
+		text.WriteString(d.Content)
+	}
+	if thought.String() != "Plan the cut." {
+		t.Fatalf("reasoning=%q", thought.String())
+	}
+	if text.String() != "Here is the recut." {
+		t.Fatalf("content=%q", text.String())
+	}
+}
+
 func TestCompatClientHTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

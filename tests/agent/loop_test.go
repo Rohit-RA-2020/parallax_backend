@@ -130,6 +130,45 @@ func fmtRoles(r []llm.Role) string {
 	return strings.Join(parts, " ")
 }
 
+func TestAgentLoopEmitsThinking(t *testing.T) {
+	p := &scriptedProvider{turns: []scriptedTurn{
+		{deltas: []llm.Delta{
+			{Reasoning: "I should inspect the timeline first."},
+			{Content: "Looking now.", FinishReason: "stop"},
+		}},
+	}}
+	ag := &Agent{Provider: p, Tools: tools.NewRegistry(), MaxIters: 2}
+	var events []Event
+	ag.Run(context.Background(), Input{
+		SessionID: "s-think",
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: "what is on the timeline?"},
+		},
+	}, func(ev Event) { events = append(events, ev) })
+
+	var thought strings.Builder
+	var sawFull bool
+	for _, ev := range events {
+		if ev.Type != EventThinking {
+			continue
+		}
+		var payload ThinkingPayload
+		if err := json.Unmarshal(ev.Data, &payload); err != nil {
+			t.Fatal(err)
+		}
+		thought.WriteString(payload.Delta)
+		if payload.Text == "I should inspect the timeline first." {
+			sawFull = true
+		}
+	}
+	if thought.String() != "I should inspect the timeline first." {
+		t.Fatalf("deltas=%q", thought.String())
+	}
+	if !sawFull {
+		t.Fatal("missing coalesced thinking text")
+	}
+}
+
 func TestTrimKeepsSystem(t *testing.T) {
 	msgs := []llm.Message{{Role: llm.RoleSystem, Content: "sys"}}
 	for i := 0; i < 20; i++ {
