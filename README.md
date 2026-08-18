@@ -81,6 +81,35 @@ replaces that bin item in place so the timeline updates. Use
 | Base URL | `GEMINI_API_BASE` | `https://generativelanguage.googleapis.com/v1beta` |
 | Model | `GEMINI_IMAGE_MODEL` | `gemini-3.1-flash-image` |
 
+To let Director generate voiceovers and sound effects, set `ELEVENLABS_API_KEY`.
+Music generation uses Gemini Lyria 3, so set `GEMINI_API_KEY` as well. The
+integrations are implemented in Go and use the provider REST APIs directly.
+
+```bash
+GEMINI_API_KEY=your-gemini-key
+GEMINI_MUSIC_MODEL=lyria-3-pro-preview
+GEMINI_MUSIC_OUTPUT_FORMAT=mp3
+ELEVENLABS_API_KEY=xi-…
+ELEVENLABS_BASE_URL=https://api.elevenlabs.io
+ELEVENLABS_TTS_MODEL=eleven_v3
+ELEVENLABS_SFX_MODEL=eleven_text_to_sound_v2
+ELEVENLABS_TTS_VOICES_FILE=./data/elevenlabs-voices.json
+```
+
+The voice catalog is a JSON array containing `id`, `name`, `description`,
+`languages`, and `characteristics`. Director calls `list_tts_voices` before
+`generate_voiceover`, then can generate-only or place the resulting audio on
+`A1`/`A2` in the same timeline revision. Generated voiceovers use ElevenLabs'
+character timing response for transcript search; music and sound effects are
+indexed from their prompts, lyrics, and generation metadata.
+
+Gemini music prompts should specify the genre, instruments, BPM, key, mood,
+structure, and intended duration. Use `lyria-3-clip-preview` for a fixed
+30-second clip and `lyria-3-pro-preview` for a longer song. Use `[Intro]`,
+`[Verse]`, `[Chorus]`, `[Bridge]`, and `[Outro]` tags or timestamps when the
+arrangement matters; add `instrumental only, no vocals` when the music sits
+under dialogue.
+
 If `LLM_MODELS` is unset, the original single-model vars still work:
 
 | Field      | Env            | Default                 |

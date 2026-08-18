@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -41,29 +42,41 @@ type Settings struct {
 
 // Config is the process-wide snapshot used at startup.
 type Config struct {
-	Addr             string
-	WorkspaceDir     string
-	DataDir          string
-	SettingsPath     string
-	ExaAPIKey        string
-	ExaBaseURL       string
-	GeminiAPIKey     string
-	GeminiBaseURL    string
-	GeminiImageModel string
-	MaxIters         int
-	FFmpegBin        string
-	FFprobeBin       string
-	FFmpegHWAccel    string
-	FFmpegHWDevice   string
-	LLMs             []LLM
-	Embedding        Embedding
-	QdrantURL        string
-	QdrantAPIKey     string
-	WhisperModel     string
-	WhisperDevice    string
-	WhisperPython    string
-	WhisperScript    string
-	WhisperCompute   string
+	Addr                       string
+	WorkspaceDir               string
+	DataDir                    string
+	SettingsPath               string
+	ExaAPIKey                  string
+	ExaBaseURL                 string
+	GeminiAPIKey               string
+	GeminiBaseURL              string
+	GeminiImageModel           string
+	GeminiMusicModel           string
+	GeminiMusicOutputFormat    string
+	ElevenLabsAPIKey           string
+	ElevenLabsBaseURL          string
+	ElevenLabsTTSModel         string
+	ElevenLabsSFXModel         string
+	ElevenLabsTTSOutputFormat  string
+	ElevenLabsSFXOutputFormat  string
+	ElevenLabsVoicesFile       string
+	ElevenLabsRequestTimeout   time.Duration
+	ElevenLabsMaxConcurrency   int
+	ElevenLabsMaxResponseBytes int64
+	MaxIters                   int
+	FFmpegBin                  string
+	FFprobeBin                 string
+	FFmpegHWAccel              string
+	FFmpegHWDevice             string
+	LLMs                       []LLM
+	Embedding                  Embedding
+	QdrantURL                  string
+	QdrantAPIKey               string
+	WhisperModel               string
+	WhisperDevice              string
+	WhisperPython              string
+	WhisperScript              string
+	WhisperCompute             string
 }
 
 // Embedding is a separate OpenAI-compatible /v1/embeddings endpoint.
@@ -97,21 +110,33 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		Addr:             envOr("PARALLAX_ADDR", DefaultAddr),
-		WorkspaceDir:     workspace,
-		DataDir:          data,
-		SettingsPath:     filepath.Join(data, "settings.json"),
-		ExaAPIKey:        strings.TrimSpace(os.Getenv("EXA_API_KEY")),
-		ExaBaseURL:       envOr("EXA_BASE_URL", "https://api.exa.ai"),
-		GeminiAPIKey:     firstNonEmpty(os.Getenv("GEMINI_API_KEY"), os.Getenv("GOOGLE_API_KEY")),
-		GeminiBaseURL:    strings.TrimRight(envOr("GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta"), "/"),
-		GeminiImageModel: envOr("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image"),
-		MaxIters:         envInt("PARALLAX_MAX_ITERS", DefaultMaxIters),
-		FFmpegBin:        envOr("FFMPEG_BIN", "ffmpeg"),
-		FFprobeBin:       envOr("FFPROBE_BIN", "ffprobe"),
-		FFmpegHWAccel:    strings.ToLower(envOr("FFMPEG_HWACCEL", "auto")),
-		FFmpegHWDevice:   strings.TrimSpace(os.Getenv("FFMPEG_HWDEVICE")),
-		LLMs:             LoadLLMProfiles(),
+		Addr:                       envOr("PARALLAX_ADDR", DefaultAddr),
+		WorkspaceDir:               workspace,
+		DataDir:                    data,
+		SettingsPath:               filepath.Join(data, "settings.json"),
+		ExaAPIKey:                  strings.TrimSpace(os.Getenv("EXA_API_KEY")),
+		ExaBaseURL:                 envOr("EXA_BASE_URL", "https://api.exa.ai"),
+		GeminiAPIKey:               firstNonEmpty(os.Getenv("GEMINI_API_KEY"), os.Getenv("GOOGLE_API_KEY")),
+		GeminiBaseURL:              strings.TrimRight(envOr("GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta"), "/"),
+		GeminiImageModel:           envOr("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image"),
+		GeminiMusicModel:           envOr("GEMINI_MUSIC_MODEL", "lyria-3-pro-preview"),
+		GeminiMusicOutputFormat:    envOr("GEMINI_MUSIC_OUTPUT_FORMAT", "mp3"),
+		ElevenLabsAPIKey:           strings.TrimSpace(os.Getenv("ELEVENLABS_API_KEY")),
+		ElevenLabsBaseURL:          strings.TrimRight(envOr("ELEVENLABS_BASE_URL", "https://api.elevenlabs.io"), "/"),
+		ElevenLabsTTSModel:         envOr("ELEVENLABS_TTS_MODEL", "eleven_v3"),
+		ElevenLabsSFXModel:         envOr("ELEVENLABS_SFX_MODEL", "eleven_text_to_sound_v2"),
+		ElevenLabsTTSOutputFormat:  envOr("ELEVENLABS_TTS_OUTPUT_FORMAT", "mp3_44100_128"),
+		ElevenLabsSFXOutputFormat:  envOr("ELEVENLABS_SFX_OUTPUT_FORMAT", "mp3_44100_128"),
+		ElevenLabsVoicesFile:       resolveExisting(envOr("ELEVENLABS_TTS_VOICES_FILE", filepath.Join("data", "elevenlabs-voices.json")), cwd),
+		ElevenLabsRequestTimeout:   time.Duration(envInt("ELEVENLABS_REQUEST_TIMEOUT_SECONDS", 900)) * time.Second,
+		ElevenLabsMaxConcurrency:   envInt("ELEVENLABS_MAX_CONCURRENCY", 4),
+		ElevenLabsMaxResponseBytes: int64(envInt("ELEVENLABS_MAX_RESPONSE_BYTES", 256<<20)),
+		MaxIters:                   envInt("PARALLAX_MAX_ITERS", DefaultMaxIters),
+		FFmpegBin:                  envOr("FFMPEG_BIN", "ffmpeg"),
+		FFprobeBin:                 envOr("FFPROBE_BIN", "ffprobe"),
+		FFmpegHWAccel:              strings.ToLower(envOr("FFMPEG_HWACCEL", "auto")),
+		FFmpegHWDevice:             strings.TrimSpace(os.Getenv("FFMPEG_HWDEVICE")),
+		LLMs:                       LoadLLMProfiles(),
 		Embedding: Embedding{
 			BaseURL: strings.TrimRight(strings.TrimSpace(os.Getenv("EMBEDDING_BASE_URL")), "/"),
 			APIKey:  strings.TrimSpace(os.Getenv("EMBEDDING_API_KEY")),
@@ -128,6 +153,15 @@ func Load() (Config, error) {
 
 	if cfg.MaxIters < 1 {
 		cfg.MaxIters = DefaultMaxIters
+	}
+	if cfg.ElevenLabsRequestTimeout < time.Second {
+		cfg.ElevenLabsRequestTimeout = 15 * time.Minute
+	}
+	if cfg.ElevenLabsMaxConcurrency < 1 {
+		cfg.ElevenLabsMaxConcurrency = 4
+	}
+	if cfg.ElevenLabsMaxResponseBytes < 1<<20 {
+		cfg.ElevenLabsMaxResponseBytes = 256 << 20
 	}
 
 	if err := os.MkdirAll(cfg.WorkspaceDir, 0o755); err != nil {

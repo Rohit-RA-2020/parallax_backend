@@ -10,7 +10,9 @@ import (
 
 	"parallax/internal/agent"
 	"parallax/internal/config"
+	"parallax/internal/elevenlabs"
 	"parallax/internal/ffmpeg"
+	"parallax/internal/gemini"
 	"parallax/internal/llm"
 	"parallax/internal/projects"
 	"parallax/internal/tools"
@@ -22,23 +24,33 @@ import (
 type ProviderFactory func(cfg config.LLM) llm.ChatProvider
 
 type Server struct {
-	Addr             string
-	Settings         *config.Store
-	Sessions         *agent.Store
-	Tools            *tools.Registry
-	SystemPrompt     string
-	ExaAPIKey        string
-	ExaBaseURL       string
-	GeminiAPIKey     string
-	GeminiBaseURL    string
-	GeminiImageModel string
-	Bins             ffmpeg.Bins
-	Projects         *projects.Store
-	NewLLM           ProviderFactory
-	MaxIters         int
-	Logger           *slog.Logger
-	Workspace        string
-	Indexer          *transcript.Indexer
+	Addr                    string
+	Settings                *config.Store
+	Sessions                *agent.Store
+	Tools                   *tools.Registry
+	SystemPrompt            string
+	ExaAPIKey               string
+	ExaBaseURL              string
+	GeminiAPIKey            string
+	GeminiBaseURL           string
+	GeminiImageModel        string
+	GeminiMusic             *gemini.Client
+	GeminiMusicModel        string
+	GeminiMusicOutputFormat string
+	Bins                    ffmpeg.Bins
+	Projects                *projects.Store
+	NewLLM                  ProviderFactory
+	MaxIters                int
+	Logger                  *slog.Logger
+	Workspace               string
+	Indexer                 *transcript.Indexer
+	ElevenLabs              *elevenlabs.Client
+	ElevenVoices            *elevenlabs.VoiceCatalog
+	ElevenTTSModel          string
+	ElevenSFXModel          string
+	ElevenTTSOutputFormat   string
+	ElevenSFXOutputFormat   string
+	ElevenLimiter           *tools.Limiter
 }
 
 func (s *Server) indexMedia(projectID, rel string) {
@@ -248,6 +260,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			Model:      s.GeminiImageModel,
 			OnMutation: timelineTx.MarkMediaMutation,
 			OnApplied:  func(rel, prompt string) { s.indexGeneratedImage(projectID, rel, prompt) },
+		})
+		tools.RegisterAudioGeneration(toolRegistry, tools.AudioGenerationEnv{
+			Workspace: project.Dir, Bins: s.Bins, Client: s.ElevenLabs, Voices: s.ElevenVoices,
+			MusicClient: s.GeminiMusic, GeminiMusicModel: s.GeminiMusicModel, GeminiMusicOutputFormat: s.GeminiMusicOutputFormat,
+			TTSModel: s.ElevenTTSModel, SFXModel: s.ElevenSFXModel,
+			TTSOutputFormat: s.ElevenTTSOutputFormat, SFXOutputFormat: s.ElevenSFXOutputFormat,
+			Limiter: s.ElevenLimiter, ProjectID: projectID, Transaction: timelineTx, Indexer: s.Indexer,
+			Logger: s.Logger, OnMutation: timelineTx.MarkMediaMutation,
 		})
 		tools.RegisterTimeline(toolRegistry, tools.TimelineEnv{
 			Transaction: timelineTx,

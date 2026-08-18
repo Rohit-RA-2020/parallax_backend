@@ -11,8 +11,10 @@ import (
 
 	"parallax/internal/agent"
 	"parallax/internal/config"
+	"parallax/internal/elevenlabs"
 	"parallax/internal/embed"
 	"parallax/internal/ffmpeg"
+	"parallax/internal/gemini"
 	"parallax/internal/httpapi"
 	"parallax/internal/llm"
 	"parallax/internal/projects"
@@ -78,6 +80,21 @@ func main() {
 		os.Exit(1)
 	}
 	settings := config.NewStore(cfg.SettingsPath, cfg.LLMs)
+	var geminiMusic *gemini.Client
+	if cfg.GeminiAPIKey != "" {
+		geminiMusic = gemini.NewClient(cfg.GeminiAPIKey, cfg.GeminiBaseURL, 15*time.Minute, 256<<20)
+	}
+	var elevenClient *elevenlabs.Client
+	var elevenVoices *elevenlabs.VoiceCatalog
+	if cfg.ElevenLabsAPIKey != "" {
+		elevenClient = elevenlabs.NewClient(cfg.ElevenLabsAPIKey, cfg.ElevenLabsBaseURL, cfg.ElevenLabsRequestTimeout, cfg.ElevenLabsMaxResponseBytes)
+	}
+	var voiceErr error
+	elevenVoices, voiceErr = elevenlabs.LoadVoiceCatalog(cfg.ElevenLabsVoicesFile)
+	if voiceErr != nil {
+		log.Error("ElevenLabs voice catalog", "err", voiceErr)
+		elevenVoices = &elevenlabs.VoiceCatalog{}
+	}
 	idx := &transcript.Indexer{
 		Projects: projectStore,
 		Bins:     bins,
@@ -107,22 +124,32 @@ func main() {
 	indexer := idx
 
 	srv := &httpapi.Server{
-		Addr:             cfg.Addr,
-		Settings:         settings,
-		Sessions:         agent.NewStore(),
-		Tools:            reg,
-		SystemPrompt:     systemPrompt,
-		ExaAPIKey:        cfg.ExaAPIKey,
-		ExaBaseURL:       cfg.ExaBaseURL,
-		GeminiAPIKey:     cfg.GeminiAPIKey,
-		GeminiBaseURL:    cfg.GeminiBaseURL,
-		GeminiImageModel: cfg.GeminiImageModel,
-		Bins:             bins,
-		Projects:         projectStore,
-		MaxIters:         cfg.MaxIters,
-		Logger:           log,
-		Workspace:        cfg.WorkspaceDir,
-		Indexer:          indexer,
+		Addr:                    cfg.Addr,
+		Settings:                settings,
+		Sessions:                agent.NewStore(),
+		Tools:                   reg,
+		SystemPrompt:            systemPrompt,
+		ExaAPIKey:               cfg.ExaAPIKey,
+		ExaBaseURL:              cfg.ExaBaseURL,
+		GeminiAPIKey:            cfg.GeminiAPIKey,
+		GeminiBaseURL:           cfg.GeminiBaseURL,
+		GeminiImageModel:        cfg.GeminiImageModel,
+		GeminiMusic:             geminiMusic,
+		GeminiMusicModel:        cfg.GeminiMusicModel,
+		GeminiMusicOutputFormat: cfg.GeminiMusicOutputFormat,
+		Bins:                    bins,
+		Projects:                projectStore,
+		MaxIters:                cfg.MaxIters,
+		Logger:                  log,
+		Workspace:               cfg.WorkspaceDir,
+		Indexer:                 indexer,
+		ElevenLabs:              elevenClient,
+		ElevenVoices:            elevenVoices,
+		ElevenTTSModel:          cfg.ElevenLabsTTSModel,
+		ElevenSFXModel:          cfg.ElevenLabsSFXModel,
+		ElevenTTSOutputFormat:   cfg.ElevenLabsTTSOutputFormat,
+		ElevenSFXOutputFormat:   cfg.ElevenLabsSFXOutputFormat,
+		ElevenLimiter:           tools.NewLimiter(cfg.ElevenLabsMaxConcurrency),
 		NewLLM: func(l config.LLM) llm.ChatProvider {
 			return llm.NewCompatClient(l.BaseURL, l.APIKey, l.Model)
 		},

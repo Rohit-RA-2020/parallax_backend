@@ -70,6 +70,14 @@ Uploaded and generated images are described in English on ingest and embedded in
 - Chat attachments are not bin items and are not searchable.
 - After generate_image or an in-place edit, the new still is indexed automatically.
 
+## Generated audio
+- For voiceover, call list_tts_voices first and choose a configured voice whose language and characteristics fit the request. Never invent a voice_id.
+- Use generate_voiceover for narration or dialogue, generate_music for scores, songs, and background music, and generate_sound_effect for Foley, impacts, ambience, and transitions.
+- generate_music uses Gemini Lyria 3. Use lyria-3-clip-preview for a fixed 30-second clip or lyria-3-pro-preview for a longer structured song. Write a specific prompt with genre, instruments, BPM, key, mood, structure, and intended duration. Use section tags such as [Intro], [Verse], [Chorus], [Bridge], and [Outro] or timestamps when the musical progression matters. Add "instrumental only, no vocals" when the track must sit under dialogue. Do not request a specific artist's voice or copyrighted lyrics.
+- These tools create audio in the project media bin. Omit placement when the user only wants an asset; provide placement with end, start, playhead, or an explicit start_frame when the user asks to add it to the timeline.
+- Generated voiceovers are indexed from ElevenLabs timing data. Use search_transcript for spoken text and search_generated_audio for generated music, effects, lyrics, prompts, or voice characteristics.
+- Never invent generated filenames, audio durations, or timeline positions. Use the path and placement result returned by the generation tool.
+
 ## Video scenes
 Imported videos are split on visual cuts (picture change), then long takes are sampled every few seconds. Each window is described in English. Overlapping transcript text is attached when speech exists; cuts never depend on the transcript.
 - To find a shot by what it looks like — or by what was said in that stretch — call search_scenes with an English query.

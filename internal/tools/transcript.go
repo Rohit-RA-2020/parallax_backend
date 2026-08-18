@@ -53,6 +53,24 @@ func RegisterTranscript(reg *Registry, env TranscriptEnv) {
 	env.registerCaptions(reg)
 	env.registerImageSearch(reg)
 	env.registerSceneSearch(reg)
+	env.registerGeneratedAudioSearch(reg)
+}
+
+func (e TranscriptEnv) registerGeneratedAudioSearch(reg *Registry) {
+	reg.Register(llm.NewFunctionTool(
+		"search_generated_audio",
+		"Semantic search over generated voiceovers, music, and sound effects. Query in English by spoken text, lyrics, mood, genre, voice characteristics, or sound description. Returns the generated media path and metadata.",
+		json.RawMessage(`{
+  "type":"object",
+  "properties":{
+    "query":{"type":"string","description":"English description of the generated audio to find"},
+    "paths":{"type":"array","items":{"type":"string"}},
+    "path":{"type":"string"},
+    "limit":{"type":"integer","minimum":1,"maximum":50}
+  },
+  "required":["query"]
+}`),
+	), e.searchGeneratedAudio)
 }
 
 func (e TranscriptEnv) registerSceneSearch(reg *Registry) {
@@ -171,6 +189,38 @@ func (e TranscriptEnv) getTranscript(_ context.Context, raw json.RawMessage) Res
 		return Result{OK: false, Error: err.Error()}
 	}
 	return Result{OK: true, Output: doc}
+}
+
+func (e TranscriptEnv) searchGeneratedAudio(ctx context.Context, raw json.RawMessage) Result {
+	if e.Indexer == nil {
+		return Result{OK: false, Error: "generated audio search is not configured"}
+	}
+	var in struct {
+		Query string   `json:"query"`
+		Path  string   `json:"path"`
+		Paths []string `json:"paths"`
+		Limit int      `json:"limit"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return Result{OK: false, Error: err.Error()}
+	}
+	paths := append([]string{}, in.Paths...)
+	if strings.TrimSpace(in.Path) != "" {
+		paths = append(paths, in.Path)
+	}
+	hits, err := e.Indexer.SearchGeneratedAudio(ctx, e.ProjectID, in.Query, paths, in.Limit)
+	if err != nil {
+		return Result{OK: false, Error: err.Error()}
+	}
+	results := make([]map[string]any, 0, len(hits))
+	for _, hit := range hits {
+		item := map[string]any{"score": hit.Score}
+		for key, value := range hit.Payload {
+			item[key] = value
+		}
+		results = append(results, item)
+	}
+	return Result{OK: true, Output: map[string]any{"query": strings.TrimSpace(in.Query), "count": len(results), "results": results}}
 }
 
 func (e TranscriptEnv) searchImages(ctx context.Context, raw json.RawMessage) Result {

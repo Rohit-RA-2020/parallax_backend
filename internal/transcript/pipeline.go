@@ -503,7 +503,13 @@ func (x *Indexer) Get(projectID, rel string) (*Document, error) {
 
 // Search embeds an English query and returns matching transcript segments.
 func (x *Indexer) Search(ctx context.Context, projectID, query string, paths []string, limit int) ([]qdrant.Hit, error) {
-	return x.search(ctx, projectID, query, paths, "", []string{KindImage, KindVideoScene}, limit)
+	return x.search(ctx, projectID, query, paths, "", []string{KindImage, KindVideoScene, KindGeneratedAudio}, limit)
+}
+
+// SearchGeneratedAudio searches prompts, lyrics, voice characteristics, and
+// descriptions stored for generated audio assets.
+func (x *Indexer) SearchGeneratedAudio(ctx context.Context, projectID, query string, paths []string, limit int) ([]qdrant.Hit, error) {
+	return x.search(ctx, projectID, query, paths, KindGeneratedAudio, nil, limit)
 }
 
 // SearchAll embeds an English query and returns stills, scenes, and speech hits.
