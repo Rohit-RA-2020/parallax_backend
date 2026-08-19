@@ -76,7 +76,7 @@ func (e TranscriptEnv) registerGeneratedAudioSearch(reg *Registry) {
 func (e TranscriptEnv) registerSceneSearch(reg *Registry) {
 	reg.Register(llm.NewFunctionTool(
 		"search_scenes",
-		"Semantic search over this project's video shots. Videos were split on visual cuts (and sampled inside long takes), described in English, and overlapping speech was attached when a transcript exists. Query in English by what the picture looks like or what was said in that shot. Returns path, start/end seconds, description, spoken text, and score. Use path plus start/end with place_media and edit_timeline. Never invent a filename or timecode.",
+		"Semantic search over this project's video shots. Silent videos, and videos the user asked to describe, were split on visual cuts and described in English. Overlapping speech is attached when a transcript exists. Query in English by what the picture looks like or what was said in that shot. Returns path, start/end seconds, description, spoken text, and score. Use path plus start/end with place_media and edit_timeline. Never invent a filename or timecode.",
 		json.RawMessage(`{
 			"type":"object",
 			"properties":{

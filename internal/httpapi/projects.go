@@ -253,6 +253,36 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"media": s.mediaResponses(id, items)})
 }
 
+func (s *Server) handleDescribeMedia(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := s.Projects.Get(id); err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	var body struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	rel := filepath.ToSlash(strings.TrimSpace(body.Path))
+	if rel == "" {
+		writeError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	if _, err := s.Projects.ResolveFile(id, rel); err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	if s.Indexer == nil {
+		writeError(w, http.StatusFailedDependency, "scene description is not configured")
+		return
+	}
+	s.Indexer.EnqueueDescribe(id, rel)
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "path": rel})
+}
+
 func (s *Server) handleProjectFile(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	rel := r.PathValue("path")

@@ -33,6 +33,10 @@ type fasterPayload struct {
 	Type     string    `json:"type"`
 	OK       bool      `json:"ok"`
 	Error    string    `json:"error"`
+	ID       string    `json:"id"`
+	Text     string    `json:"text"`
+	Start    float64   `json:"start"`
+	End      float64   `json:"end"`
 	Language string    `json:"language"`
 	Model    string    `json:"model"`
 	Device   string    `json:"device"`
@@ -43,8 +47,12 @@ type fasterPayload struct {
 }
 
 func (w *FasterWhisper) Transcribe(ctx context.Context, wavPath string, progress ProgressFunc) (ASRResult, error) {
+	return w.TranscribeStream(ctx, wavPath, progress, nil)
+}
+
+func (w *FasterWhisper) TranscribeStream(ctx context.Context, wavPath string, progress ProgressFunc, onSeg SegmentFunc) (ASRResult, error) {
 	if err := w.Ensure(ctx); err == nil {
-		res, err := w.httpTranscribe(ctx, wavPath, progress)
+		res, err := w.httpTranscribe(ctx, wavPath, progress, onSeg)
 		if err == nil {
 			return res, nil
 		}
@@ -52,7 +60,13 @@ func (w *FasterWhisper) Transcribe(ctx context.Context, wavPath string, progress
 		w.stopLocked()
 		w.mu.Unlock()
 	}
-	return w.oneShot(ctx, wavPath)
+	res, err := w.oneShot(ctx, wavPath)
+	if err == nil && onSeg != nil {
+		for _, seg := range res.Segments {
+			onSeg(seg, nil)
+		}
+	}
+	return res, err
 }
 
 // Ensure starts the resident worker and loads the model once.
@@ -155,7 +169,7 @@ func (w *FasterWhisper) stopLocked() {
 	w.port = 0
 }
 
-func (w *FasterWhisper) httpTranscribe(ctx context.Context, wavPath string, progress ProgressFunc) (ASRResult, error) {
+func (w *FasterWhisper) httpTranscribe(ctx context.Context, wavPath string, progress ProgressFunc, onSeg SegmentFunc) (ASRResult, error) {
 	w.mu.Lock()
 	port := w.port
 	client := w.client
@@ -197,6 +211,26 @@ func (w *FasterWhisper) httpTranscribe(ctx context.Context, wavPath string, prog
 		case "progress":
 			if progress != nil {
 				progress(ev.At, ev.Duration)
+			}
+		case "meta":
+			if ev.Language != "" {
+				last.Language = ev.Language
+			}
+			if ev.Duration > 0 {
+				last.Duration = ev.Duration
+			}
+		case "segment":
+			seg := Segment{
+				ID:    ev.ID,
+				Start: ev.Start,
+				End:   ev.End,
+				Text:  ev.Text,
+			}
+			if onSeg != nil && strings.TrimSpace(seg.Text) != "" {
+				onSeg(seg, ev.Words)
+			}
+			if progress != nil && ev.End > 0 {
+				progress(ev.End, firstPositive(ev.Duration, last.Duration))
 			}
 		default:
 			last = ev
@@ -272,6 +306,15 @@ func resultFromPayload(payload fasterPayload, model string) (ASRResult, error) {
 	}
 	assignSegmentIDs(out.Segments)
 	return out, nil
+}
+
+func firstPositive(vals ...float64) float64 {
+	for _, v := range vals {
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
 }
 
 func firstNonEmpty(vals ...string) string {

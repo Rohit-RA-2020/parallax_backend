@@ -9,9 +9,17 @@ import (
 // ProgressFunc reports decode position in seconds.
 type ProgressFunc func(at, duration float64)
 
+// SegmentFunc is called as soon as Whisper finishes one phrase.
+type SegmentFunc func(seg Segment, words []Word)
+
 // Transcriber turns a 16 kHz mono wav into words and segments.
 type Transcriber interface {
 	Transcribe(ctx context.Context, wavPath string, progress ProgressFunc) (ASRResult, error)
+}
+
+// StreamTranscriber emits segments while decoding so they can be embedded live.
+type StreamTranscriber interface {
+	TranscribeStream(ctx context.Context, wavPath string, progress ProgressFunc, onSeg SegmentFunc) (ASRResult, error)
 }
 
 // ASRResult is one Whisper pass over a file.

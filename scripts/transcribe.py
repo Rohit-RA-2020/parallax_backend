@@ -47,7 +47,7 @@ def pick_model(name: str, device: str, compute: str):
         return load_model(name, "cpu", "int8"), "cpu"
 
 
-def collect(model, wav, on_progress=None):
+def collect(model, wav, on_progress=None, on_segment=None, on_meta=None):
     segments, info = model.transcribe(
         wav,
         language=None,
@@ -56,6 +56,9 @@ def collect(model, wav, on_progress=None):
         beam_size=5,
     )
     duration = float(getattr(info, "duration", 0) or 0)
+    language = (info.language or "").lower()
+    if on_meta:
+        on_meta(language, duration)
     out_segments = []
     words = []
     for i, seg in enumerate(segments):
@@ -63,30 +66,32 @@ def collect(model, wav, on_progress=None):
         if not text:
             continue
         end = float(seg.end or 0)
-        if on_progress:
-            on_progress(end, duration)
-        out_segments.append(
-            {
-                "id": f"seg-{i:04d}",
-                "start": float(seg.start or 0),
-                "end": end,
-                "text": text,
-            }
-        )
+        item = {
+            "id": f"seg-{i:04d}",
+            "start": float(seg.start or 0),
+            "end": end,
+            "text": text,
+        }
+        out_segments.append(item)
+        seg_words = []
         for word in seg.words or []:
             token = (word.word or "").strip()
             if not token:
                 continue
-            words.append(
-                {
-                    "start": float(word.start or 0),
-                    "end": float(word.end or 0),
-                    "text": token,
-                }
-            )
+            w = {
+                "start": float(word.start or 0),
+                "end": float(word.end or 0),
+                "text": token,
+            }
+            words.append(w)
+            seg_words.append(w)
+        if on_segment:
+            on_segment(item, seg_words)
+        if on_progress:
+            on_progress(end, duration)
     return {
         "ok": True,
-        "language": (info.language or "").lower(),
+        "language": language,
         "duration": duration,
         "segments": out_segments,
         "words": words,
@@ -157,6 +162,20 @@ def run_server(args) -> int:
                     payload = collect(
                         model,
                         wav,
+                        on_meta=lambda language, duration: emit(
+                            {"type": "meta", "language": language, "duration": duration, "ok": True}
+                        ),
+                        on_segment=lambda item, words: emit(
+                            {
+                                "type": "segment",
+                                "ok": True,
+                                "id": item.get("id"),
+                                "start": item.get("start"),
+                                "end": item.get("end"),
+                                "text": item.get("text"),
+                                "words": words,
+                            }
+                        ),
                         on_progress=lambda at, duration: emit({"type": "progress", "at": at, "duration": duration}),
                     )
                 payload["type"] = "result"

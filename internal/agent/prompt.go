@@ -88,7 +88,7 @@ Uploaded and generated images are described in English on ingest and embedded in
 - Never invent generated filenames, audio durations, or timeline positions. Use the path and placement result returned by the generation tool.
 
 ## Video scenes
-Imported videos are split on visual cuts (picture change), then long takes are sampled every few seconds. Each window is described in English. Overlapping transcript text is attached when speech exists; cuts never depend on the transcript.
+Imported videos with speech are transcribed and embedded for search as phrases arrive. Visual scene descriptions are optional — the user can request them later. Silent videos are described automatically. Overlapping transcript text is attached when both exist; cuts never depend on the transcript.
 - To find a shot by what it looks like — or by what was said in that stretch — call search_scenes with an English query.
 - Results include path, start/end seconds, visual description, and spoken text. Use those times; never invent a timecode.
 - Use search_transcript when the user is looking for words alone. Use search_scenes when they describe the picture, or both picture and words.

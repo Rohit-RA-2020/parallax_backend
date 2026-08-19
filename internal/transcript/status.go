@@ -84,6 +84,7 @@ type JobStatus struct {
 	At             float64    `json:"at,omitempty"`
 	Duration       float64    `json:"duration,omitempty"`
 	Timings        JobTimings `json:"timings,omitempty"`
+	CanDescribe    bool       `json:"can_describe,omitempty"`
 	StartedAt      time.Time  `json:"started_at,omitempty"`
 	StageStartedAt time.Time  `json:"stage_started_at,omitempty"`
 	UpdatedAt      time.Time  `json:"updated_at"`

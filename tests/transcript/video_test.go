@@ -132,7 +132,7 @@ func TestIndexerCaptionsVideoScenesAndAttachesSpeech(t *testing.T) {
 		Qdrant:     qd,
 		Completer:  func() llm.Completer { return vision },
 	}
-	if err := idx.Index(context.Background(), project.ID, "media/broll.mp4"); err != nil {
+	if err := idx.IndexDescribe(context.Background(), project.ID, "media/broll.mp4"); err != nil {
 		t.Fatal(err)
 	}
 	if vision.calls < 1 || vision.images < 1 {
@@ -159,6 +159,115 @@ func TestIndexerCaptionsVideoScenesAndAttachesSpeech(t *testing.T) {
 	if idx.Statuses(project.ID)["media/broll.mp4"].State != StateReady {
 		t.Fatalf("status=%+v", idx.Statuses(project.ID))
 	}
+}
+
+func TestIndexerSkipsScenesWhenTranscriptExists(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skip("ffprobe not installed")
+	}
+	store, err := projects.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := store.Create("Talk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(project.Dir, "media", "talk.mp4")
+	if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("ffmpeg", "-y",
+		"-f", "lavfi", "-i", "sine=f=440:d=1",
+		"-f", "lavfi", "-i", "color=c=black:s=16x16:d=1",
+		"-shortest", "-pix_fmt", "yuv420p", src)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg: %v\n%s", err, out)
+	}
+	embeds := 0
+	qdrantSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/collections/"):
+			http.Error(w, "missing", http.StatusNotFound)
+		case r.Method == http.MethodPut && strings.HasSuffix(strings.Split(r.URL.Path, "?")[0], "/points"):
+			_, _ = w.Write([]byte(`{"result":{"status":"ok"}}`))
+		case r.Method == http.MethodPut, r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"result":true}`))
+		default:
+			http.Error(w, "unhandled", http.StatusInternalServerError)
+		}
+	}))
+	defer qdrantSrv.Close()
+	embedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Input []string `json:"input"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		embeds++
+		var data []map[string]any
+		for i := range req.Input {
+			data = append(data, map[string]any{"index": i, "embedding": []float32{0.1, 0.2}})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	defer embedSrv.Close()
+	emb := embed.NewClient(embedSrv.URL+"/v1", "k", "m")
+	emb.HTTPClient = embedSrv.Client()
+	qd := qdrant.NewClient(qdrantSrv.URL, "")
+	qd.HTTPClient = qdrantSrv.Client()
+	vision := &visionCompleter{reply: "should not run"}
+	var segs []Segment
+	for i := 0; i < 10; i++ {
+		segs = append(segs, Segment{Text: "Hello there", TextEN: "Hello there"})
+	}
+	idx := &Indexer{
+		Projects:   store,
+		Bins:       ffmpeg.Bins{FFmpeg: "ffmpeg", FFprobe: "ffprobe"},
+		Whisper:    streamASR{result: ASRResult{Language: "en", Model: "turbo", Segments: segs}},
+		Embeddings: emb,
+		Qdrant:     qd,
+		Completer:  func() llm.Completer { return vision },
+	}
+	if err := idx.Index(context.Background(), project.ID, "media/talk.mp4"); err != nil {
+		t.Fatal(err)
+	}
+	if vision.calls != 0 {
+		t.Fatalf("described spoken video: calls=%d", vision.calls)
+	}
+	st := idx.Statuses(project.ID)["media/talk.mp4"]
+	if !st.CanDescribe || st.State != StateReady {
+		t.Fatalf("status=%+v", st)
+	}
+	hash, err := projects.HashFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scenes, err := LoadVideoScenes(project.Dir, hash); err != nil || scenes != nil {
+		t.Fatalf("scenes should be skipped: %+v err=%v", scenes, err)
+	}
+	if embeds < 1 {
+		t.Fatalf("expected transcript embeddings, got %d", embeds)
+	}
+}
+
+type streamASR struct {
+	result ASRResult
+}
+
+func (s streamASR) Transcribe(context.Context, string, ProgressFunc) (ASRResult, error) {
+	return s.result, nil
+}
+
+func (s streamASR) TranscribeStream(_ context.Context, _ string, _ ProgressFunc, onSeg SegmentFunc) (ASRResult, error) {
+	for _, seg := range s.result.Segments {
+		if onSeg != nil {
+			onSeg(seg, nil)
+		}
+	}
+	return s.result, nil
 }
 
 func sceneHasSpoken(scenes []VideoScene, want string) bool {
