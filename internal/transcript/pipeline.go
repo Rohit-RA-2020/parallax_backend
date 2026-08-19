@@ -165,6 +165,7 @@ func (x *Indexer) lightLoop() {
 }
 
 func (x *Indexer) runJob(job indexJob) {
+	x.stampQueue(job.projectID, job.rel)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
 	if err := x.Index(ctx, job.projectID, job.rel); err != nil {
@@ -243,6 +244,11 @@ func (x *Indexer) indexSpeech(ctx context.Context, projectID, rel string) error 
 		x.Mark(projectID, rel, StateSkipped, "")
 		return nil
 	}
+	if info.Duration > 0 {
+		x.patchStatus(projectID, rel, false, func(st *JobStatus) {
+			st.Duration = info.Duration
+		})
+	}
 	hash, err := projects.HashFile(abs)
 	if err != nil {
 		return err
@@ -253,6 +259,7 @@ func (x *Indexer) indexSpeech(ctx context.Context, projectID, rel string) error 
 		return err
 	}
 	if complete(doc) && (!x.canEmbed() || doc.Embedded) {
+		x.NoteCached(projectID, rel)
 		x.Mark(projectID, rel, StateReady, "")
 		return nil
 	}
@@ -265,12 +272,18 @@ func (x *Indexer) indexSpeech(ctx context.Context, projectID, rel string) error 
 		}
 	} else {
 		doc.Path = rel
+		x.NoteCached(projectID, rel)
 	}
 
 	if needsEnglish(doc.Segments) {
 		x.Mark(projectID, rel, StateTranslating, "")
-	}
-	if err := x.ensureEnglish(ctx, doc); err != nil {
+		started := time.Now()
+		if err := x.ensureEnglish(ctx, doc); err != nil {
+			_ = Save(project.Dir, doc)
+			return err
+		}
+		x.AddTiming(projectID, rel, TimingTranslate, sinceMs(started))
+	} else if err := x.ensureEnglish(ctx, doc); err != nil {
 		_ = Save(project.Dir, doc)
 		return err
 	}
@@ -279,21 +292,26 @@ func (x *Indexer) indexSpeech(ctx context.Context, projectID, rel string) error 
 	}
 	if !x.canEmbed() {
 		x.Mark(projectID, rel, StateReady, "")
+		x.logTimings(projectID, rel)
 		return nil
 	}
 	x.Mark(projectID, rel, StateIndexing, "")
+	started := time.Now()
 	if err := x.upsert(ctx, projectID, doc); err != nil {
 		doc.Embedded = false
 		_ = Save(project.Dir, doc)
+		x.AddTiming(projectID, rel, TimingIndex, sinceMs(started))
 		x.Mark(projectID, rel, StateIndexFailed, err.Error())
 		x.log().Error("transcript embed", "project", projectID, "path", rel, "err", err)
 		return nil
 	}
+	x.AddTiming(projectID, rel, TimingIndex, sinceMs(started))
 	doc.Embedded = true
 	if err := Save(project.Dir, doc); err != nil {
 		return err
 	}
 	x.Mark(projectID, rel, StateReady, "")
+	x.logTimings(projectID, rel)
 	return nil
 }
 
@@ -316,9 +334,11 @@ func (x *Indexer) canEmbed() bool {
 
 func (x *Indexer) transcribe(ctx context.Context, projectID, projectDir, rel, hash string, duration float64) (*Document, error) {
 	scratch := filepath.ToSlash(filepath.Join(".scratch", "asr-"+hash+".wav"))
+	extractStarted := time.Now()
 	if err := ffmpeg.ExtractMono16k(ctx, x.Bins, projectDir, rel, scratch); err != nil {
 		return nil, err
 	}
+	x.AddTiming(projectID, rel, TimingExtract, sinceMs(extractStarted))
 	wavAbs := filepath.Join(projectDir, filepath.FromSlash(scratch))
 	defer os.Remove(wavAbs)
 
@@ -337,15 +357,19 @@ func (x *Indexer) transcribe(ctx context.Context, projectID, projectDir, rel, ha
 		if err := Save(projectDir, reused); err != nil {
 			return nil, err
 		}
+		x.NoteCached(projectID, rel)
 		return reused, nil
 	}
 
+	asrStarted := time.Now()
 	asr, err := x.Whisper.Transcribe(ctx, wavAbs, func(at, total float64) {
 		x.MarkProgress(projectID, rel, at, total)
 	})
 	if err != nil {
 		return nil, err
 	}
+	x.AddTiming(projectID, rel, TimingTranscribe, sinceMs(asrStarted))
+	x.SetTimingMeta(projectID, rel, asr.Model, firstNonEmpty(asr.Device, x.asrDevice()))
 	assignSegmentIDs(asr.Segments)
 	doc := &Document{
 		ContentHash: hash,
@@ -558,6 +582,40 @@ func assignSegmentIDs(segments []Segment) {
 			segments[i].ID = fmt.Sprintf("seg-%04d", i)
 		}
 	}
+}
+
+func (x *Indexer) asrDevice() string {
+	if x == nil {
+		return ""
+	}
+	if w, ok := x.Whisper.(*FasterWhisper); ok {
+		return strings.TrimSpace(w.Device)
+	}
+	return ""
+}
+
+func (x *Indexer) logTimings(projectID, rel string) {
+	if x == nil {
+		return
+	}
+	st := x.lookup(projectID, rel)
+	t := st.Timings
+	x.log().Info("index timings",
+		"project", projectID,
+		"path", rel,
+		"state", st.State,
+		"upload_ms", t.UploadMs,
+		"queue_ms", t.QueueMs,
+		"extract_ms", t.ExtractMs,
+		"transcribe_ms", t.TranscribeMs,
+		"translate_ms", t.TranslateMs,
+		"describe_ms", t.DescribeMs,
+		"index_ms", t.IndexMs,
+		"total_ms", t.TotalMs,
+		"cached", t.Cached,
+		"model", t.Model,
+		"device", t.Device,
+	)
 }
 
 // HasSpeech is true for video/audio extensions that may contain a soundtrack.

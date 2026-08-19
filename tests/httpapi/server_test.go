@@ -286,7 +286,10 @@ func TestListMediaIncludesTranscriptStatus(t *testing.T) {
 		Media []struct {
 			Path       string `json:"path"`
 			Transcript *struct {
-				State string `json:"state"`
+				State   string `json:"state"`
+				Timings *struct {
+					UploadMs int64 `json:"upload_ms"`
+				} `json:"timings"`
 			} `json:"transcript"`
 		} `json:"media"`
 	}
@@ -295,6 +298,9 @@ func TestListMediaIncludesTranscriptStatus(t *testing.T) {
 	}
 	if len(listed.Media) != 1 || listed.Media[0].Transcript == nil || listed.Media[0].Transcript.State != transcript.StateTranscribing {
 		t.Fatalf("listed=%+v", listed)
+	}
+	if listed.Media[0].Transcript.Timings == nil || listed.Media[0].Transcript.Timings.UploadMs < 1 {
+		t.Fatalf("upload timings=%+v", listed.Media[0].Transcript)
 	}
 }
 

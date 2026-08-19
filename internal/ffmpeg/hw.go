@@ -250,7 +250,8 @@ func smokeEncode(ctx context.Context, bins Bins, a Accel, encoder string) bool {
 	defer os.RemoveAll(dir)
 
 	dest := filepath.Join(dir, "smoke.mp4")
-	args := []string{"-hide_banner", "-y", "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.04", "-frames:v", "1"}
+	// NVENC rejects frames below ~129x64 on L4 and other cards.
+	args := []string{"-hide_banner", "-y", "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.04", "-frames:v", "1"}
 	args = append(args, hwInitArgs(a)...)
 	if vf := hwUploadFilter(a); vf != "" {
 		args = append(args, "-vf", vf)

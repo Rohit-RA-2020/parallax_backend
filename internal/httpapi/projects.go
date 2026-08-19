@@ -177,7 +177,11 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "expected multipart form data")
 		return
 	}
-	var uploaded []projects.Media
+	type uploadedFile struct {
+		media    projects.Media
+		uploadMs int64
+	}
+	var uploaded []uploadedFile
 	for {
 		part, err := reader.NextPart()
 		if errors.Is(err, io.EOF) {
@@ -191,13 +195,15 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 			_ = part.Close()
 			continue
 		}
+		started := time.Now()
 		media, saveErr := s.Projects.SaveUpload(id, part.FileName(), part)
+		uploadMs := time.Since(started).Milliseconds()
 		_ = part.Close()
 		if saveErr != nil {
 			writeError(w, http.StatusBadRequest, saveErr.Error())
 			return
 		}
-		uploaded = append(uploaded, media)
+		uploaded = append(uploaded, uploadedFile{media: media, uploadMs: uploadMs})
 	}
 	if len(uploaded) == 0 {
 		writeError(w, http.StatusBadRequest, "no media files were uploaded")
@@ -207,11 +213,18 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, err)
 		return
 	}
-	s.attachDurations(id, uploaded)
-	for _, media := range uploaded {
-		s.indexMedia(id, media.Path)
+	items := make([]projects.Media, len(uploaded))
+	for i, item := range uploaded {
+		items[i] = item.media
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"media": s.mediaResponses(id, uploaded)})
+	s.attachDurations(id, items)
+	for _, item := range uploaded {
+		if s.Indexer != nil {
+			s.Indexer.NoteUpload(id, item.media.Path, item.uploadMs)
+		}
+		s.indexMedia(id, item.media.Path)
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"media": s.mediaResponses(id, items)})
 }
 
 func (s *Server) handleProjectFile(w http.ResponseWriter, r *http.Request) {

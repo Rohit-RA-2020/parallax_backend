@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"parallax/internal/ffmpeg"
 	"parallax/internal/llm"
@@ -80,6 +81,7 @@ func (x *Indexer) indexScenes(ctx context.Context, projectID, rel string) error 
 	}
 
 	x.Mark(projectID, rel, StateDescribing, "")
+	describeStarted := time.Now()
 	cuts, err := ffmpeg.DetectScenes(ctx, x.Bins, project.Dir, rel, ffmpeg.DefaultSceneThreshold)
 	if err != nil {
 		x.log().Info("scene detect fallback to interval samples", "path", rel, "err", err)
@@ -144,6 +146,7 @@ func (x *Indexer) indexScenes(ctx context.Context, projectID, rel string) error 
 	if captioned == 0 {
 		return fmt.Errorf("could not describe any scenes in %s", rel)
 	}
+	x.AddTiming(projectID, rel, TimingDescribe, sinceMs(describeStarted))
 	return x.finishVideoScenes(ctx, projectID, doc)
 }
 
@@ -154,21 +157,26 @@ func (x *Indexer) finishVideoScenes(ctx context.Context, projectID string, doc *
 	}
 	if !x.canEmbed() {
 		x.Mark(projectID, doc.Path, StateReady, "")
+		x.logTimings(projectID, doc.Path)
 		return nil
 	}
 	x.Mark(projectID, doc.Path, StateIndexing, "")
+	started := time.Now()
 	if err := x.upsertVideoScenes(ctx, projectID, doc); err != nil {
 		doc.Embedded = false
 		_ = SaveVideoScenes(project.Dir, doc)
+		x.AddTiming(projectID, doc.Path, TimingIndex, sinceMs(started))
 		x.Mark(projectID, doc.Path, StateIndexFailed, err.Error())
 		x.log().Error("video scene embed", "project", projectID, "path", doc.Path, "err", err)
 		return nil
 	}
+	x.AddTiming(projectID, doc.Path, TimingIndex, sinceMs(started))
 	doc.Embedded = true
 	if err := SaveVideoScenes(project.Dir, doc); err != nil {
 		return err
 	}
 	x.Mark(projectID, doc.Path, StateReady, "")
+	x.logTimings(projectID, doc.Path)
 	return nil
 }
 

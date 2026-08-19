@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"parallax/internal/projects"
 	"parallax/internal/qdrant"
@@ -48,8 +49,10 @@ func (x *Indexer) IndexGeneratedAudio(ctx context.Context, projectID, rel string
 		return err
 	}
 	x.Mark(projectID, rel, StateIndexing, "")
+	started := time.Now()
 	fail := func(err error) error {
 		if err != nil {
+			x.AddTiming(projectID, rel, TimingIndex, sinceMs(started))
 			x.Mark(projectID, rel, StateIndexFailed, err.Error())
 		}
 		return err
@@ -112,7 +115,9 @@ func (x *Indexer) IndexGeneratedAudio(ctx context.Context, projectID, rel string
 			}
 		}
 	}
+	x.AddTiming(projectID, rel, TimingIndex, sinceMs(started))
 	x.Mark(projectID, rel, StateReady, "")
+	x.logTimings(projectID, rel)
 	return nil
 }
 

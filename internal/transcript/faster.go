@@ -260,6 +260,7 @@ func resultFromPayload(payload fasterPayload, model string) (ASRResult, error) {
 	out := ASRResult{
 		Language: strings.ToLower(strings.TrimSpace(payload.Language)),
 		Model:    firstNonEmpty(payload.Model, model),
+		Device:   strings.TrimSpace(payload.Device),
 		Words:    payload.Words,
 		Segments: payload.Segments,
 	}

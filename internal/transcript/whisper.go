@@ -18,6 +18,7 @@ type Transcriber interface {
 type ASRResult struct {
 	Language string
 	Model    string
+	Device   string
 	Words    []Word
 	Segments []Segment
 }

@@ -149,8 +149,12 @@ func TestIndexerWritesTranscriptAndUpsertsEnglishVectors(t *testing.T) {
 	if payload["text_en"] != "Thanks" || payload["path"] != "media/talk.mp4" || payload["content_hash"] != hash || payload["kind"] != KindTranscript {
 		t.Fatalf("payload=%#v", payload)
 	}
-	if idx.Statuses(project.ID)["media/talk.mp4"].State != StateReady {
+	st := idx.Statuses(project.ID)["media/talk.mp4"]
+	if st.State != StateReady {
 		t.Fatalf("status=%+v", idx.Statuses(project.ID))
+	}
+	if st.Timings.ExtractMs <= 0 || st.Timings.IndexMs <= 0 || st.Timings.TotalMs <= 0 {
+		t.Fatalf("timings=%+v", st.Timings)
 	}
 }
 

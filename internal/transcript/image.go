@@ -108,22 +108,27 @@ func (x *Indexer) indexImage(ctx context.Context, projectID, rel string) error {
 			return err
 		}
 		if !x.canEmbed() {
+			x.NoteCached(projectID, rel)
 			x.Mark(projectID, rel, StateReady, "")
 			return nil
 		}
 		x.Mark(projectID, rel, StateIndexing, "")
+		started := time.Now()
 		if err := x.upsertImage(ctx, projectID, doc, prevPath); err != nil {
 			doc.Embedded = false
 			_ = SaveImage(project.Dir, doc)
+			x.AddTiming(projectID, rel, TimingIndex, sinceMs(started))
 			x.Mark(projectID, rel, StateIndexFailed, err.Error())
 			x.log().Error("image embed", "project", projectID, "path", rel, "err", err)
 			return nil
 		}
+		x.AddTiming(projectID, rel, TimingIndex, sinceMs(started))
 		doc.Embedded = true
 		if err := SaveImage(project.Dir, doc); err != nil {
 			return err
 		}
 		x.Mark(projectID, rel, StateReady, "")
+		x.logTimings(projectID, rel)
 		return nil
 	}
 
@@ -145,6 +150,7 @@ func (x *Indexer) indexImage(ctx context.Context, projectID, rel string) error {
 		}
 		captionCtx, cancel := context.WithTimeout(ctx, imageCaptionTO)
 		defer cancel()
+		started := time.Now()
 		text, err := CaptionImage(captionCtx, completer, llm.ImageRef{
 			Path: rel,
 			MIME: llm.DetectImageMIME(data),
@@ -154,6 +160,7 @@ func (x *Indexer) indexImage(ctx context.Context, projectID, rel string) error {
 		if err != nil {
 			return err
 		}
+		x.AddTiming(projectID, rel, TimingDescribe, sinceMs(started))
 		width, height := stillDimensions(data)
 		doc = &ImageCaption{
 			ContentHash: hash,
@@ -177,21 +184,26 @@ func (x *Indexer) indexImage(ctx context.Context, projectID, rel string) error {
 
 	if !x.canEmbed() {
 		x.Mark(projectID, rel, StateReady, "")
+		x.logTimings(projectID, rel)
 		return nil
 	}
 	x.Mark(projectID, rel, StateIndexing, "")
+	started := time.Now()
 	if err := x.upsertImage(ctx, projectID, doc, ""); err != nil {
 		doc.Embedded = false
 		_ = SaveImage(project.Dir, doc)
+		x.AddTiming(projectID, rel, TimingIndex, sinceMs(started))
 		x.Mark(projectID, rel, StateIndexFailed, err.Error())
 		x.log().Error("image embed", "project", projectID, "path", rel, "err", err)
 		return nil
 	}
+	x.AddTiming(projectID, rel, TimingIndex, sinceMs(started))
 	doc.Embedded = true
 	if err := SaveImage(project.Dir, doc); err != nil {
 		return err
 	}
 	x.Mark(projectID, rel, StateReady, "")
+	x.logTimings(projectID, rel)
 	return nil
 }
 
