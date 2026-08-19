@@ -56,6 +56,11 @@ func isWorkspaceMediaPath(val string) bool {
 	return true
 }
 
+// HasVideoExt is true for container extensions that may carry a picture stream.
+func HasVideoExt(rel string) bool {
+	return mediaKind(rel) == "video"
+}
+
 // SameMediaKind reports whether two paths are the same media family.
 func SameMediaKind(a, b string) bool {
 	ka, kb := mediaKind(a), mediaKind(b)

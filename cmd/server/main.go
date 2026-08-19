@@ -17,6 +17,7 @@ import (
 	"parallax/internal/gemini"
 	"parallax/internal/httpapi"
 	"parallax/internal/llm"
+	"parallax/internal/preview"
 	"parallax/internal/projects"
 	"parallax/internal/qdrant"
 	"parallax/internal/tools"
@@ -123,6 +124,9 @@ func main() {
 	idx.Start()
 	indexer := idx
 
+	previews := &preview.Builder{Projects: projectStore, Bins: bins, Logger: log}
+	previews.Start()
+
 	srv := &httpapi.Server{
 		Addr:                    cfg.Addr,
 		Settings:                settings,
@@ -147,6 +151,7 @@ func main() {
 		Logger:                  log,
 		Workspace:               cfg.WorkspaceDir,
 		Indexer:                 indexer,
+		Previews:                previews,
 		ElevenLabs:              elevenClient,
 		ElevenVoices:            elevenVoices,
 		ElevenTTSModel:          cfg.ElevenLabsTTSModel,
@@ -186,6 +191,9 @@ func main() {
 	<-ctx.Done()
 	if indexer != nil {
 		indexer.Close()
+	}
+	if previews != nil {
+		previews.Close()
 	}
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -10,11 +10,14 @@ import (
 
 // MediaProbe is duration, coded frame size, and which streams exist.
 type MediaProbe struct {
-	Duration float64
-	Width    int
-	Height   int
-	HasVideo bool
-	HasAudio bool
+	Duration    float64
+	Width       int
+	Height      int
+	HasVideo    bool
+	HasAudio    bool
+	VideoCodec  string
+	PixelFormat string
+	AudioCodec  string
 }
 
 // ProbeDuration returns the container duration in seconds for a workspace file.
@@ -31,7 +34,7 @@ func ProbeMedia(ctx context.Context, bins Bins, workspace, rel string) (MediaPro
 	cmd, err := Validate([]string{
 		"ffprobe",
 		"-v", "error",
-		"-show_entries", "format=duration:stream=width,height,codec_type",
+		"-show_entries", "format=duration:stream=width,height,codec_type,codec_name,pix_fmt",
 		"-of", "json",
 		rel,
 	}, ValidateOpts{Workspace: workspace})
@@ -52,6 +55,8 @@ func ParseMediaProbe(raw string) (MediaProbe, error) {
 			Width     int    `json:"width"`
 			Height    int    `json:"height"`
 			CodecType string `json:"codec_type"`
+			CodecName string `json:"codec_name"`
+			PixFmt    string `json:"pix_fmt"`
 		} `json:"streams"`
 		Format struct {
 			Duration string `json:"duration"`
@@ -70,11 +75,20 @@ func ParseMediaProbe(raw string) (MediaProbe, error) {
 		switch strings.ToLower(stream.CodecType) {
 		case "audio":
 			out.HasAudio = true
+			if out.AudioCodec == "" {
+				out.AudioCodec = strings.ToLower(strings.TrimSpace(stream.CodecName))
+			}
 		case "video":
 			out.HasVideo = true
 			if out.Width < 1 && stream.Width > 0 && stream.Height > 0 {
 				out.Width = stream.Width
 				out.Height = stream.Height
+			}
+			if out.VideoCodec == "" {
+				out.VideoCodec = strings.ToLower(strings.TrimSpace(stream.CodecName))
+			}
+			if out.PixelFormat == "" {
+				out.PixelFormat = strings.ToLower(strings.TrimSpace(stream.PixFmt))
 			}
 		}
 	}

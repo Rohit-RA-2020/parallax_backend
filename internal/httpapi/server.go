@@ -14,6 +14,7 @@ import (
 	"parallax/internal/ffmpeg"
 	"parallax/internal/gemini"
 	"parallax/internal/llm"
+	"parallax/internal/preview"
 	"parallax/internal/projects"
 	"parallax/internal/tools"
 	"parallax/internal/transcript"
@@ -48,6 +49,7 @@ type Server struct {
 	Logger                  *slog.Logger
 	Workspace               string
 	Indexer                 *transcript.Indexer
+	Previews                *preview.Builder
 	ElevenLabs              *elevenlabs.Client
 	ElevenVoices            *elevenlabs.VoiceCatalog
 	ElevenTTSModel          string
@@ -60,10 +62,22 @@ type Server struct {
 }
 
 func (s *Server) indexMedia(projectID, rel string) {
-	if s == nil || s.Indexer == nil {
+	if s == nil {
 		return
 	}
-	s.Indexer.Enqueue(projectID, rel)
+	if s.Indexer != nil {
+		s.Indexer.Enqueue(projectID, rel)
+	}
+	if s.Previews != nil {
+		s.Previews.Enqueue(projectID, rel)
+	}
+}
+
+func (s *Server) enqueuePreview(projectID, rel string) {
+	if s == nil || s.Previews == nil {
+		return
+	}
+	s.Previews.Enqueue(projectID, rel)
 }
 
 func (s *Server) indexGeneratedImage(projectID, rel, prompt string) {
@@ -492,8 +506,9 @@ func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Access-Control-Allow-Origin", "*")
-		h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Expected-Revision, X-Change-Summary")
+		h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Expected-Revision, X-Change-Summary, Range")
 		h.Set("Access-Control-Allow-Methods", "GET, PUT, POST, PATCH, DELETE, OPTIONS")
+		h.Set("Access-Control-Expose-Headers", "Accept-Ranges, Content-Range, Content-Length, Content-Type")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

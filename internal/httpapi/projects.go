@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"parallax/internal/ffmpeg"
+	"parallax/internal/preview"
 	"parallax/internal/projects"
 	"parallax/internal/transcript"
 )
@@ -46,6 +47,7 @@ type mediaResponse struct {
 	projects.Media
 	ContentURL string                `json:"content_url"`
 	Transcript *transcript.JobStatus `json:"transcript,omitempty"`
+	Preview    *preview.Status       `json:"preview,omitempty"`
 }
 
 func (s *Server) handleListProjects(w http.ResponseWriter, _ *http.Request) {
@@ -110,6 +112,7 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.attachDurations(p.ID, media)
+	s.ensurePreviews(p.ID, media)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project": projectResponse{Project: p, MediaCount: len(media)},
 		"media":   s.mediaResponses(p.ID, media),
@@ -169,6 +172,7 @@ func (s *Server) handleListMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.attachDurations(id, media)
+	s.ensurePreviews(id, media)
 	writeJSON(w, http.StatusOK, map[string]any{"media": s.mediaResponses(id, media)})
 }
 
@@ -274,7 +278,15 @@ func (s *Server) handleProjectFile(w http.ResponseWriter, r *http.Request) {
 		disposition = "attachment"
 	}
 	w.Header().Set("Content-Disposition", disposition+`; filename="`+filename+`"`)
-	w.Header().Set("Cache-Control", "no-store")
+	if strings.Contains(filepath.ToSlash(rel), "/.parallax/previews/") || strings.HasPrefix(filepath.ToSlash(rel), ".parallax/previews/") {
+		w.Header().Set("Cache-Control", "private, max-age=3600")
+		if strings.EqualFold(filepath.Ext(full), ".mp4") {
+			w.Header().Set("Content-Type", "video/mp4")
+		}
+	} else {
+		w.Header().Set("Cache-Control", "no-store")
+	}
+	w.Header().Set("Accept-Ranges", "bytes")
 	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 }
 
@@ -319,6 +331,9 @@ func (s *Server) handleDeleteProjectFile(w http.ResponseWriter, r *http.Request)
 	}
 	if s.Indexer != nil {
 		_ = s.Indexer.RemovePath(r.Context(), id, removedPath)
+	}
+	if s.Previews != nil {
+		s.Previews.Clear(id, removedPath)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -465,6 +480,10 @@ func (s *Server) mediaResponses(projectID string, media []projects.Media) []medi
 	if s != nil && s.Indexer != nil {
 		statuses = s.Indexer.Statuses(projectID)
 	}
+	var previews map[string]preview.Status
+	if s != nil && s.Previews != nil {
+		previews = s.Previews.Statuses(projectID)
+	}
 	out := make([]mediaResponse, 0, len(media))
 	for _, item := range media {
 		u := projectFileURL(projectID, item.Path)
@@ -476,9 +495,35 @@ func (s *Server) mediaResponses(projectID string, media []projects.Media) []medi
 			copy := st
 			itemOut.Transcript = &copy
 		}
+		if st, ok := previews[item.Path]; ok {
+			copy := st
+			if copy.URLPath != "" {
+				copy.URLPath = projectFileURL(projectID, copy.URLPath)
+			}
+			if copy.PosterPath != "" {
+				copy.PosterPath = projectFileURL(projectID, copy.PosterPath)
+			}
+			itemOut.Preview = &copy
+		}
 		out = append(out, itemOut)
 	}
 	return out
+}
+
+func (s *Server) ensurePreviews(projectID string, media []projects.Media) {
+	if s == nil || s.Previews == nil {
+		return
+	}
+	known := s.Previews.Statuses(projectID)
+	for _, item := range media {
+		if item.Kind != "video" {
+			continue
+		}
+		if _, ok := known[item.Path]; ok {
+			continue
+		}
+		s.Previews.Enqueue(projectID, item.Path)
+	}
 }
 
 func (s *Server) attachDurations(projectID string, media []projects.Media) {
