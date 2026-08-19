@@ -55,6 +55,8 @@ type Server struct {
 	ElevenTTSOutputFormat   string
 	ElevenSFXOutputFormat   string
 	ElevenLimiter           *tools.Limiter
+	// MaxUploadBytes caps one media request. Zero uses DefaultMaxUploadBytes (16 GiB).
+	MaxUploadBytes int64
 }
 
 func (s *Server) indexMedia(projectID, rel string) {

@@ -394,6 +394,47 @@ func TestDeleteProjectRemovesWorkspaceAndIndex(t *testing.T) {
 	}
 }
 
+func TestUploadRejectsOversizeFile(t *testing.T) {
+	s := testServer(t, fakeProvider{})
+	s.MaxUploadBytes = 64
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/projects", "application/json", strings.NewReader(`{"name":"Demo"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	part, err := mw.CreateFormFile("files", "huge.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(bytes.Repeat([]byte("x"), 200)); err != nil {
+		t.Fatal(err)
+	}
+	_ = mw.Close()
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/projects/"+created.ID+"/media", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status=%s body=%s", resp.Status, raw)
+	}
+}
+
 func TestProjectUploadAndServe(t *testing.T) {
 	s := testServer(t, fakeProvider{})
 	ts := httptest.NewServer(s.Handler())

@@ -201,6 +201,19 @@ func (s *Store) saveTimelineCommit(projectID string, doc Timeline, expected int,
 	if err != nil {
 		return Timeline{}, err
 	}
+	var snapped map[string]string
+	if captureMedia {
+		prev := map[string]string{}
+		if head, headErr := readHead(p); headErr == nil {
+			if rev, revErr := readRevision(p, head); revErr == nil {
+				prev = rev.Media
+			}
+		}
+		snapped, err = snapshotMedia(p, prev)
+		if err != nil {
+			return Timeline{}, err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	current, err := readTimeline(p)
@@ -239,11 +252,7 @@ func (s *Store) saveTimelineCommit(projectID string, doc Timeline, expected int,
 	}
 	media := parentRevision.Media
 	if captureMedia {
-		media, err = snapshotMedia(p)
-		if err != nil {
-			_ = writeTimeline(p, current)
-			return Timeline{}, err
-		}
+		media = snapped
 	}
 	rev := Revision{ID: nextID, ParentID: &parent, Actor: meta.Actor, Summary: meta.Summary, ChatID: meta.ChatID, CreatedAt: normalized.UpdatedAt, Timeline: normalized, Media: media}
 	if err := writeRevision(p, rev); err != nil {

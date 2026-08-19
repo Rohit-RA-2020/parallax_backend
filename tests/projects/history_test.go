@@ -108,6 +108,57 @@ func TestMediaVersionRestoresExactBytes(t *testing.T) {
 	}
 }
 
+func TestMediaSnapshotReusesUnchangedObject(t *testing.T) {
+	store, err := projects.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := store.Create("Reuse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := bytes.Repeat([]byte("clip"), 32<<10)
+	if _, err := store.SaveUpload(project.ID, "clip.mp4", bytes.NewReader(payload)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CommitMediaState(project.ID, -1, projects.CommitMeta{Summary: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	objects := filepath.Join(project.Dir, ".parallax", "objects")
+	entries, err := os.ReadDir(objects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("objects=%d", len(entries))
+	}
+	info, err := os.Stat(filepath.Join(objects, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := info.ModTime()
+	if _, err := store.CommitMediaState(project.ID, -1, projects.CommitMeta{Summary: "second"}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = os.ReadDir(objects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("objects after second commit=%d", len(entries))
+	}
+	info, err = os.Stat(filepath.Join(objects, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.ModTime().Equal(first) {
+		t.Fatal("unchanged media was rewritten into the object store")
+	}
+	if _, err := os.Stat(filepath.Join(project.Dir, ".parallax", "object-index.json")); err != nil {
+		t.Fatalf("object index: %v", err)
+	}
+}
+
 func TestCheckpointLabelsRevision(t *testing.T) {
 	store, _ := projects.NewStore(t.TempDir())
 	project, _ := store.Create("Checkpoint")

@@ -163,6 +163,8 @@ func main() {
 		Addr:              cfg.Addr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		// ReadTimeout and WriteTimeout stay unset so multi-GB uploads and
+		// long transcodes are not killed mid-stream.
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -405,7 +405,7 @@ func (tx *TimelineTransaction) Commit() (Timeline, bool, error) {
 	doc, err := tx.store.saveTimelineCommit(tx.projectID, tx.doc, tx.baseRevision, tx.meta, tx.mediaDirty)
 	if err != nil && tx.mediaDirty {
 		if p, getErr := tx.store.Get(tx.projectID); getErr == nil {
-			current, _ := snapshotMedia(p)
+			current, _ := snapshotMedia(p, tx.baseMedia)
 			_ = restoreMedia(p, tx.baseMedia, current)
 		}
 	}
@@ -437,7 +437,7 @@ func (tx *TimelineTransaction) Rollback() {
 	tx.mu.Lock()
 	if tx.mediaDirty {
 		if p, err := tx.store.Get(tx.projectID); err == nil {
-			current, _ := snapshotMedia(p)
+			current, _ := snapshotMedia(p, tx.baseMedia)
 			_ = restoreMedia(p, tx.baseMedia, current)
 		}
 	}

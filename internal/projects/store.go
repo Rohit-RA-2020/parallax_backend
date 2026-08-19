@@ -161,7 +161,10 @@ func (s *Store) SaveUpload(id, originalName string, src io.Reader) (Media, error
 			_ = os.Remove(tmpName)
 		}
 	}()
-	if _, err := io.Copy(tmp, src); err != nil {
+	if err := copyStream(tmp, src); err != nil {
+		if IsNoSpace(err) {
+			return Media{}, fmt.Errorf("not enough disk space to store this file")
+		}
 		return Media{}, err
 	}
 	if err := tmp.Sync(); err != nil {

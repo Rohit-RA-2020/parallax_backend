@@ -19,7 +19,19 @@ import (
 	"parallax/internal/transcript"
 )
 
-const maxUploadBytes = 2 << 30
+const DefaultMaxUploadBytes = 16 << 30
+
+func (s *Server) maxUploadBytes() int64 {
+	if s != nil && s.MaxUploadBytes > 0 {
+		return s.MaxUploadBytes
+	}
+	if v := strings.TrimSpace(os.Getenv("PARALLAX_MAX_UPLOAD_BYTES")); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	return DefaultMaxUploadBytes
+}
 
 type createProjectRequest struct {
 	Name string `json:"name"`
@@ -162,7 +174,8 @@ func (s *Server) handleListMedia(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, err := s.Projects.Get(id); err != nil {
+	project, err := s.Projects.Get(id)
+	if err != nil {
 		writeProjectError(w, err)
 		return
 	}
@@ -171,7 +184,16 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, err)
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	limit := s.maxUploadBytes()
+	if r.ContentLength > limit {
+		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("upload is too large (%s); max is %s per request", formatByteSize(r.ContentLength), formatByteSize(limit)))
+		return
+	}
+	if err := projects.EnsureDiskSpace(project.Dir, r.ContentLength); err != nil {
+		writeError(w, http.StatusInsufficientStorage, err.Error())
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	reader, err := r.MultipartReader()
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "expected multipart form data")
@@ -188,7 +210,7 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			writeUploadError(w, err, limit)
 			return
 		}
 		if part.FileName() == "" {
@@ -200,7 +222,7 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 		uploadMs := time.Since(started).Milliseconds()
 		_ = part.Close()
 		if saveErr != nil {
-			writeError(w, http.StatusBadRequest, saveErr.Error())
+			writeUploadError(w, saveErr, limit)
 			return
 		}
 		uploaded = append(uploaded, uploadedFile{media: media, uploadMs: uploadMs})
@@ -486,6 +508,38 @@ func (s *Server) attachDurations(projectID string, media []projects.Media) {
 			media[i].Height = info.Height
 		}
 	}
+}
+
+func writeUploadError(w http.ResponseWriter, err error, limit int64) {
+	if err == nil {
+		return
+	}
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) || errors.Is(err, http.ErrBodyReadAfterClose) {
+		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("upload is too large; max is %s per request", formatByteSize(limit)))
+		return
+	}
+	if projects.IsNoSpace(err) {
+		writeError(w, http.StatusInsufficientStorage, "not enough disk space to store this file")
+		return
+	}
+	writeError(w, http.StatusBadRequest, err.Error())
+}
+
+func formatByteSize(n int64) string {
+	if n < 0 {
+		n = 0
+	}
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit && exp < 4; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 func writeProjectError(w http.ResponseWriter, err error) {

@@ -78,7 +78,7 @@ func ensureHistory(p Project, current Timeline) error {
 		ID: current.Revision, Actor: "system", Summary: "Initial project state",
 		CreatedAt: time.Now().UTC(), Timeline: current,
 	}
-	media, err := snapshotMedia(p)
+	media, err := snapshotMedia(p, nil)
 	if err != nil {
 		return err
 	}
