@@ -42,8 +42,39 @@ func TestPreviewEncodePlanReportsSelectedDevice(t *testing.T) {
 		Label:   "NVIDIA L4",
 		H264:    "h264_nvenc",
 	}})
-	if !got.Hardware || got.Encoder != "h264_nvenc" || got.Device != "NVIDIA L4 (0)" {
+	if !got.Hardware || got.Encoder != "h264_nvenc" || got.Device != "NVIDIA L4 (0)" || got.Pipeline != "gpu_full" {
 		t.Fatalf("preview plan=%+v", got)
+	}
+}
+
+func TestWritePreviewUsesFullCUDAPath(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	accel := DetectAccel(ctx, Bins{FFmpeg: "ffmpeg"}, DetectOpts{Prefer: "cuda", Device: "0"})
+	if accel.Backend != "cuda" {
+		t.Skip("no working CUDA encoder on this host")
+	}
+	filters, err := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-filters").CombinedOutput()
+	if err != nil || !strings.Contains(string(filters), "scale_cuda") {
+		t.Skip("ffmpeg has no scale_cuda filter")
+	}
+
+	ws := t.TempDir()
+	source := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "testsrc2=s=640x360:r=24:d=0.5",
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", filepath.Join(ws, "source.mkv"))
+	if out, err := source.CombinedOutput(); err != nil {
+		t.Fatalf("source: %v: %s", err, out)
+	}
+	info, err := WritePreviewWithInfo(ctx, Bins{FFmpeg: "ffmpeg", FFprobe: "ffprobe", Accel: accel}, ws, "source.mkv", "preview.mp4", 0.5, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Hardware || info.Encoder != "h264_nvenc" || info.Pipeline != "gpu_full" {
+		t.Fatalf("preview encode=%+v", info)
 	}
 }
 

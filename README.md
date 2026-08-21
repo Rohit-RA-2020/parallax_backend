@@ -38,7 +38,9 @@ actually encodes a test frame, rewrites software video codecs (`libx264`,
 burns, and `run_ffmpeg`. NVIDIA NVENC is preferred when present; then
 VideoToolbox, Intel QSV, then VAAPI. Filter-heavy graphs stay in system
 memory and only the encode steps onto the GPU (NVENC accepts those frames
-directly). A failed GPU encode retries on CPU. Set `FFMPEG_HWACCEL=off` to
+directly). NVIDIA preview proxies use NVDEC, `scale_cuda`, and NVENC so video
+frames stay on the GPU; unsupported sources fall back to GPU encode-only and
+then CPU. A failed GPU encode retries on CPU. Set `FFMPEG_HWACCEL=off` to
 disable, or pin `cuda` / `vaapi` / `qsv` / `videotoolbox`. `FFMPEG_HWDEVICE`
 selects a GPU index or `/dev/dri/renderD*` node.
 

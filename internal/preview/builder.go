@@ -103,6 +103,7 @@ func (b *Builder) Enqueue(projectID, rel string) {
 		Encoder:  plan.Encoder,
 		Device:   plan.Device,
 		Hardware: plan.Hardware,
+		Pipeline: plan.Pipeline,
 	})
 	select {
 	case b.queue <- previewJob{projectID: projectID, rel: rel}:
@@ -142,6 +143,7 @@ func (b *Builder) runJob(job previewJob) {
 			Encoder:  plan.Encoder,
 			Device:   plan.Device,
 			Hardware: plan.Hardware,
+			Pipeline: plan.Pipeline,
 		})
 		b.log().Error("preview proxy", "project", job.projectID, "path", job.rel, "err", err)
 	}
@@ -193,7 +195,7 @@ func (b *Builder) Build(ctx context.Context, projectID, rel string) error {
 
 	b.Mark(projectID, rel, Status{
 		State: StateBuilding, Reason: reason, Codec: codec, Progress: "poster",
-		Encoder: plan.Encoder, Device: plan.Device, Hardware: plan.Hardware,
+		Encoder: plan.Encoder, Device: plan.Device, Hardware: plan.Hardware, Pipeline: plan.Pipeline,
 	})
 	posterAt := posterSeekSec
 	if info.Duration > 0 && info.Duration < posterAt {
@@ -213,6 +215,7 @@ func (b *Builder) Build(ctx context.Context, projectID, rel string) error {
 		Encoder:    plan.Encoder,
 		Device:     plan.Device,
 		Hardware:   plan.Hardware,
+		Pipeline:   plan.Pipeline,
 	})
 	encoded, err := ffmpeg.WritePreviewWithInfo(ctx, b.Bins, project.Dir, rel, proxyRel, info.Duration, func(at, total float64) {
 		progress := ""
@@ -237,6 +240,7 @@ func (b *Builder) Build(ctx context.Context, projectID, rel string) error {
 			Encoder:    plan.Encoder,
 			Device:     plan.Device,
 			Hardware:   plan.Hardware,
+			Pipeline:   plan.Pipeline,
 		})
 	})
 	if err != nil {
@@ -251,8 +255,9 @@ func (b *Builder) Build(ctx context.Context, projectID, rel string) error {
 		Encoder:    encoded.Encoder,
 		Device:     encoded.Device,
 		Hardware:   encoded.Hardware,
+		Pipeline:   encoded.Pipeline,
 	})
-	b.log().Info("preview ready", "path", rel, "proxy", proxyRel, "codec", codec, "encoder", encoded.Encoder, "device", encoded.Device)
+	b.log().Info("preview ready", "path", rel, "proxy", proxyRel, "codec", codec, "encoder", encoded.Encoder, "device", encoded.Device, "pipeline", encoded.Pipeline)
 	return nil
 }
 

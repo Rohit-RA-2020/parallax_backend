@@ -30,6 +30,7 @@ type Status struct {
 	Encoder    string    `json:"encoder,omitempty"`
 	Device     string    `json:"device,omitempty"`
 	Hardware   bool      `json:"hardware"`
+	Pipeline   string    `json:"pipeline,omitempty"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 

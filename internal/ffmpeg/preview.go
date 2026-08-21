@@ -24,6 +24,7 @@ type PreviewEncodeInfo struct {
 	Encoder  string
 	Device   string
 	Hardware bool
+	Pipeline string
 }
 
 // PreviewEncodePlan reports the encoder selected for a playback proxy before
@@ -34,9 +35,10 @@ func PreviewEncodePlan(bins Bins) PreviewEncodeInfo {
 			Encoder:  bins.Accel.H264,
 			Device:   previewDeviceLabel(bins.Accel),
 			Hardware: true,
+			Pipeline: previewHardwarePipeline(bins.Accel),
 		}
 	}
-	return PreviewEncodeInfo{Encoder: "libx264", Device: "CPU"}
+	return PreviewEncodeInfo{Encoder: "libx264", Device: "CPU", Pipeline: "cpu"}
 }
 
 // BrowserPlayable is true when a typical Chromium/Firefox <video> tag can
@@ -170,7 +172,7 @@ func WritePreviewWithInfo(ctx context.Context, bins Bins, workspace, inRel, outR
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		result, runErr := Run(ctx, bins, cmd, workspace, previewTimeout)
+		result, runErr := runPreview(ctx, bins, cmd, workspace)
 		done <- outcome{result: result, err: runErr}
 	}()
 
@@ -221,7 +223,7 @@ func writePreviewVideoOnly(ctx context.Context, bins Bins, workspace, inRel, out
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		result, runErr := Run(ctx, bins, cmd, workspace, previewTimeout)
+		result, runErr := runPreview(ctx, bins, cmd, workspace)
 		done <- outcome{result: result, err: runErr}
 	}()
 	tick := time.NewTicker(400 * time.Millisecond)
@@ -243,6 +245,67 @@ func writePreviewVideoOnly(ctx context.Context, bins Bins, workspace, inRel, out
 	}
 }
 
+func runPreview(ctx context.Context, bins Bins, cmd Command, workspace string) (Result, error) {
+	if cudaCmd, ok := cudaPreviewCommand(cmd, bins.Accel); ok {
+		cudaBins := bins
+		cudaBins.Accel = Accel{}
+		gpu, err := Run(ctx, cudaBins, cudaCmd, workspace, previewTimeout)
+		if err == nil {
+			return gpu, nil
+		}
+		if ctx.Err() != nil {
+			return gpu, err
+		}
+		fallback, fallbackErr := Run(ctx, bins, cmd, workspace, previewTimeout)
+		if fallbackErr == nil {
+			fallback.Stderr = "full gpu preview failed; retried with fallback pipeline\n" + lastLines(gpu.Stderr, 8) + "\n" + fallback.Stderr
+			return fallback, nil
+		}
+		return gpu, fmt.Errorf("%w (preview fallback also failed: %v)", err, fallbackErr)
+	}
+	return Run(ctx, bins, cmd, workspace, previewTimeout)
+}
+
+func cudaPreviewCommand(cmd Command, accel Accel) (Command, bool) {
+	if cmd.Kind != KindFFmpeg || accel.Backend != "cuda" || !accel.Enabled() {
+		return Command{}, false
+	}
+	args, ok := RewriteSoftwareEncode(cmd.Args, accel)
+	if !ok {
+		return Command{}, false
+	}
+	out := make([]string, 0, len(args)+6)
+	insertedInput := false
+	for i := 0; i < len(args); i++ {
+		name, inline := splitFlag(args[i])
+		if name == "-i" && !insertedInput {
+			out = append(out, "-hwaccel", "cuda", "-hwaccel_output_format", "cuda")
+			if device := strings.TrimSpace(accel.Device); device != "" {
+				out = append(out, "-hwaccel_device", device)
+			}
+			insertedInput = true
+		}
+		if name == "-vf" || name == "-filter" {
+			out = append(out, name, fmt.Sprintf("scale_cuda=w='min(%d,iw)':h=-2:format=yuv420p:interp_algo=bicubic", previewMaxWidth))
+			if inline == "" && i+1 < len(args) {
+				i++
+			}
+			continue
+		}
+		if name == "-pix_fmt" || name == "-pix_fmt:v" {
+			if inline == "" && i+1 < len(args) {
+				i++
+			}
+			continue
+		}
+		out = append(out, args[i])
+	}
+	if !insertedInput {
+		return Command{}, false
+	}
+	return Command{Kind: cmd.Kind, Args: out}, true
+}
+
 func previewEncodeResult(bins Bins, result Result) PreviewEncodeInfo {
 	encoder := ""
 	for i := 0; i+1 < len(result.Args); i++ {
@@ -258,7 +321,30 @@ func previewEncodeResult(bins Bins, result Result) PreviewEncodeInfo {
 	if hardware {
 		device = previewDeviceLabel(bins.Accel)
 	}
-	return PreviewEncodeInfo{Encoder: encoder, Device: device, Hardware: hardware}
+	pipeline := "cpu"
+	if hardware {
+		pipeline = "gpu_encode"
+		if hasFlag(result.Args, "-hwaccel_output_format") && containsArgValue(result.Args, "cuda") && strings.Contains(strings.Join(result.Args, ","), "scale_cuda=") {
+			pipeline = "gpu_full"
+		}
+	}
+	return PreviewEncodeInfo{Encoder: encoder, Device: device, Hardware: hardware, Pipeline: pipeline}
+}
+
+func containsArgValue(args []string, want string) bool {
+	for _, arg := range args {
+		if strings.EqualFold(strings.TrimSpace(arg), want) {
+			return true
+		}
+	}
+	return false
+}
+
+func previewHardwarePipeline(accel Accel) string {
+	if accel.Backend == "cuda" {
+		return "gpu_full"
+	}
+	return "gpu_encode"
 }
 
 func previewDeviceLabel(accel Accel) string {
