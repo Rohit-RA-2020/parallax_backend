@@ -17,6 +17,14 @@ const (
 	StateFailed   = "failed"
 )
 
+type Timings struct {
+	QueueMs     int64 `json:"queue_ms,omitempty"`
+	ProbeMs     int64 `json:"probe_ms,omitempty"`
+	PosterMs    int64 `json:"poster_ms,omitempty"`
+	TranscodeMs int64 `json:"transcode_ms,omitempty"`
+	TotalMs     int64 `json:"total_ms,omitempty"`
+}
+
 // Status is the public preview-proxy state for one media file.
 type Status struct {
 	Path       string    `json:"path"`
@@ -31,6 +39,8 @@ type Status struct {
 	Device     string    `json:"device,omitempty"`
 	Hardware   bool      `json:"hardware"`
 	Pipeline   string    `json:"pipeline,omitempty"`
+	Timings    Timings   `json:"timings,omitempty"`
+	StartedAt  time.Time `json:"started_at,omitempty"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
@@ -56,7 +66,14 @@ func (b *Builder) Mark(projectID, rel string, st Status) {
 	if b.live == nil {
 		b.live = map[string]Status{}
 	}
-	b.live[statusKey(projectID, rel)] = st
+	key := statusKey(projectID, rel)
+	if previous, ok := b.live[key]; ok && st.StartedAt.IsZero() {
+		st.StartedAt = previous.StartedAt
+		if st.Timings == (Timings{}) {
+			st.Timings = previous.Timings
+		}
+	}
+	b.live[key] = st
 	b.mu.Unlock()
 	if b.Projects == nil {
 		return

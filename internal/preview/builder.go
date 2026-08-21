@@ -42,6 +42,7 @@ type Builder struct {
 type previewJob struct {
 	projectID string
 	rel       string
+	enqueued  time.Time
 }
 
 func (b *Builder) log() *slog.Logger {
@@ -98,15 +99,17 @@ func (b *Builder) Enqueue(projectID, rel string) {
 	}
 	b.Start()
 	plan := ffmpeg.PreviewEncodePlan(b.Bins)
+	enqueued := time.Now().UTC()
 	b.Mark(projectID, rel, Status{
-		State:    StateQueued,
-		Encoder:  plan.Encoder,
-		Device:   plan.Device,
-		Hardware: plan.Hardware,
-		Pipeline: plan.Pipeline,
+		State:     StateQueued,
+		Encoder:   plan.Encoder,
+		Device:    plan.Device,
+		Hardware:  plan.Hardware,
+		Pipeline:  plan.Pipeline,
+		StartedAt: enqueued,
 	})
 	select {
-	case b.queue <- previewJob{projectID: projectID, rel: rel}:
+	case b.queue <- previewJob{projectID: projectID, rel: rel, enqueued: enqueued}:
 	case <-b.stop:
 	}
 }
@@ -130,7 +133,7 @@ func (b *Builder) runJob(job previewJob) {
 	}
 	ctx, cancel := context.WithTimeout(parent, jobTimeout)
 	defer cancel()
-	if err := b.Build(ctx, job.projectID, job.rel); err != nil {
+	if err := b.build(ctx, job.projectID, job.rel, job.enqueued); err != nil {
 		if b.Projects != nil {
 			if _, getErr := b.Projects.Get(job.projectID); getErr != nil {
 				return
@@ -151,9 +154,18 @@ func (b *Builder) runJob(job previewJob) {
 
 // Build writes a browser-playable proxy when the source cannot play natively.
 func (b *Builder) Build(ctx context.Context, projectID, rel string) error {
+	return b.build(ctx, projectID, rel, time.Now().UTC())
+}
+
+func (b *Builder) build(ctx context.Context, projectID, rel string, enqueued time.Time) error {
 	if b == nil || b.Projects == nil {
 		return nil
 	}
+	if enqueued.IsZero() {
+		enqueued = time.Now().UTC()
+	}
+	buildStarted := time.Now()
+	timings := Timings{QueueMs: elapsedMs(enqueued)}
 	rel = filepath.ToSlash(strings.TrimSpace(rel))
 	project, err := b.Projects.Get(projectID)
 	if err != nil {
@@ -163,10 +175,12 @@ func (b *Builder) Build(ctx context.Context, projectID, rel string) error {
 	if err != nil {
 		return err
 	}
+	probeStarted := time.Now()
 	info, err := ffmpeg.ProbeMedia(ctx, b.Bins, project.Dir, rel)
 	if err != nil {
 		return err
 	}
+	timings.ProbeMs = elapsedMs(probeStarted)
 	if !info.HasVideo {
 		return nil
 	}
@@ -196,15 +210,18 @@ func (b *Builder) Build(ctx context.Context, projectID, rel string) error {
 	b.Mark(projectID, rel, Status{
 		State: StateBuilding, Reason: reason, Codec: codec, Progress: "poster",
 		Encoder: plan.Encoder, Device: plan.Device, Hardware: plan.Hardware, Pipeline: plan.Pipeline,
+		Timings: timings, StartedAt: enqueued,
 	})
 	posterAt := posterSeekSec
 	if info.Duration > 0 && info.Duration < posterAt {
 		posterAt = info.Duration / 3
 	}
+	posterStarted := time.Now()
 	if err := ffmpeg.ExtractFrame(ctx, b.Bins, project.Dir, rel, posterRel, posterAt); err != nil {
 		b.log().Info("preview poster", "path", rel, "err", err)
 		posterRel = ""
 	}
+	timings.PosterMs = elapsedMs(posterStarted)
 
 	b.Mark(projectID, rel, Status{
 		State:      StateBuilding,
@@ -216,7 +233,10 @@ func (b *Builder) Build(ctx context.Context, projectID, rel string) error {
 		Device:     plan.Device,
 		Hardware:   plan.Hardware,
 		Pipeline:   plan.Pipeline,
+		Timings:    timings,
+		StartedAt:  enqueued,
 	})
+	transcodeStarted := time.Now()
 	encoded, err := ffmpeg.WritePreviewWithInfo(ctx, b.Bins, project.Dir, rel, proxyRel, info.Duration, func(at, total float64) {
 		progress := ""
 		if total > 0 {
@@ -231,6 +251,9 @@ func (b *Builder) Build(ctx context.Context, projectID, rel string) error {
 		} else if at > 0 {
 			progress = formatClock(at)
 		}
+		liveTimings := timings
+		liveTimings.TranscodeMs = elapsedMs(transcodeStarted)
+		liveTimings.TotalMs = elapsedMs(buildStarted) + timings.QueueMs
 		b.Mark(projectID, rel, Status{
 			State:      StateBuilding,
 			PosterPath: posterRel,
@@ -241,11 +264,15 @@ func (b *Builder) Build(ctx context.Context, projectID, rel string) error {
 			Device:     plan.Device,
 			Hardware:   plan.Hardware,
 			Pipeline:   plan.Pipeline,
+			Timings:    liveTimings,
+			StartedAt:  enqueued,
 		})
 	})
 	if err != nil {
 		return err
 	}
+	timings.TranscodeMs = elapsedMs(transcodeStarted)
+	timings.TotalMs = elapsedMs(buildStarted) + timings.QueueMs
 	b.Mark(projectID, rel, Status{
 		State:      StateReady,
 		URLPath:    proxyRel,
@@ -256,9 +283,22 @@ func (b *Builder) Build(ctx context.Context, projectID, rel string) error {
 		Device:     encoded.Device,
 		Hardware:   encoded.Hardware,
 		Pipeline:   encoded.Pipeline,
+		Timings:    timings,
+		StartedAt:  enqueued,
 	})
 	b.log().Info("preview ready", "path", rel, "proxy", proxyRel, "codec", codec, "encoder", encoded.Encoder, "device", encoded.Device, "pipeline", encoded.Pipeline)
 	return nil
+}
+
+func elapsedMs(start time.Time) int64 {
+	if start.IsZero() {
+		return 0
+	}
+	ms := time.Since(start).Milliseconds()
+	if ms < 1 {
+		return 1
+	}
+	return ms
 }
 
 func previewKey(rel, abs string) string {
