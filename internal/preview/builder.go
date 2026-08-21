@@ -97,7 +97,13 @@ func (b *Builder) Enqueue(projectID, rel string) {
 		return
 	}
 	b.Start()
-	b.Mark(projectID, rel, Status{State: StateQueued})
+	plan := ffmpeg.PreviewEncodePlan(b.Bins)
+	b.Mark(projectID, rel, Status{
+		State:    StateQueued,
+		Encoder:  plan.Encoder,
+		Device:   plan.Device,
+		Hardware: plan.Hardware,
+	})
 	select {
 	case b.queue <- previewJob{projectID: projectID, rel: rel}:
 	case <-b.stop:
@@ -129,7 +135,14 @@ func (b *Builder) runJob(job previewJob) {
 				return
 			}
 		}
-		b.Mark(job.projectID, job.rel, Status{State: StateFailed, Error: err.Error()})
+		plan := ffmpeg.PreviewEncodePlan(b.Bins)
+		b.Mark(job.projectID, job.rel, Status{
+			State:    StateFailed,
+			Error:    err.Error(),
+			Encoder:  plan.Encoder,
+			Device:   plan.Device,
+			Hardware: plan.Hardware,
+		})
 		b.log().Error("preview proxy", "project", job.projectID, "path", job.rel, "err", err)
 	}
 }
@@ -160,6 +173,7 @@ func (b *Builder) Build(ctx context.Context, projectID, rel string) error {
 	posterRel := filepath.ToSlash(filepath.Join(".parallax", "previews", key+".jpg"))
 	codec := strings.TrimSpace(info.VideoCodec)
 	reason := ffmpeg.PreviewReason(rel, info)
+	plan := ffmpeg.PreviewEncodePlan(b.Bins)
 
 	if st, err := os.Stat(filepath.Join(project.Dir, filepath.FromSlash(proxyRel))); err == nil && st.Size() > 0 {
 		b.Mark(projectID, rel, Status{
@@ -177,7 +191,10 @@ func (b *Builder) Build(ctx context.Context, projectID, rel string) error {
 		return nil
 	}
 
-	b.Mark(projectID, rel, Status{State: StateBuilding, Reason: reason, Codec: codec, Progress: "poster"})
+	b.Mark(projectID, rel, Status{
+		State: StateBuilding, Reason: reason, Codec: codec, Progress: "poster",
+		Encoder: plan.Encoder, Device: plan.Device, Hardware: plan.Hardware,
+	})
 	posterAt := posterSeekSec
 	if info.Duration > 0 && info.Duration < posterAt {
 		posterAt = info.Duration / 3
@@ -193,8 +210,11 @@ func (b *Builder) Build(ctx context.Context, projectID, rel string) error {
 		Reason:     reason,
 		Codec:      codec,
 		Progress:   "0%",
+		Encoder:    plan.Encoder,
+		Device:     plan.Device,
+		Hardware:   plan.Hardware,
 	})
-	if err := ffmpeg.WritePreview(ctx, b.Bins, project.Dir, rel, proxyRel, info.Duration, func(at, total float64) {
+	encoded, err := ffmpeg.WritePreviewWithInfo(ctx, b.Bins, project.Dir, rel, proxyRel, info.Duration, func(at, total float64) {
 		progress := ""
 		if total > 0 {
 			pct := int(at / total * 100)
@@ -214,8 +234,12 @@ func (b *Builder) Build(ctx context.Context, projectID, rel string) error {
 			Reason:     reason,
 			Codec:      codec,
 			Progress:   progress,
+			Encoder:    plan.Encoder,
+			Device:     plan.Device,
+			Hardware:   plan.Hardware,
 		})
-	}); err != nil {
+	})
+	if err != nil {
 		return err
 	}
 	b.Mark(projectID, rel, Status{
@@ -224,8 +248,11 @@ func (b *Builder) Build(ctx context.Context, projectID, rel string) error {
 		PosterPath: posterRel,
 		Reason:     reason,
 		Codec:      codec,
+		Encoder:    encoded.Encoder,
+		Device:     encoded.Device,
+		Hardware:   encoded.Hardware,
 	})
-	b.log().Info("preview ready", "path", rel, "proxy", proxyRel, "codec", codec)
+	b.log().Info("preview ready", "path", rel, "proxy", proxyRel, "codec", codec, "encoder", encoded.Encoder, "device", encoded.Device)
 	return nil
 }
 

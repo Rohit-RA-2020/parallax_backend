@@ -27,6 +27,9 @@ type Status struct {
 	Error      string    `json:"error,omitempty"`
 	Reason     string    `json:"reason,omitempty"`
 	Codec      string    `json:"codec,omitempty"`
+	Encoder    string    `json:"encoder,omitempty"`
+	Device     string    `json:"device,omitempty"`
+	Hardware   bool      `json:"hardware"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 

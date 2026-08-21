@@ -74,8 +74,12 @@ func TestWritePreviewMakesH264Mp4(t *testing.T) {
 		t.Fatalf("src: %v\n%s", err, out)
 	}
 	bins := Bins{FFmpeg: "ffmpeg", FFprobe: "ffprobe"}
-	if err := WritePreview(context.Background(), bins, dir, "src.mkv", "prev.mp4", 0.4, nil); err != nil {
+	encoded, err := WritePreviewWithInfo(context.Background(), bins, dir, "src.mkv", "prev.mp4", 0.4, nil)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if encoded.Hardware || encoded.Encoder != "libx264" || encoded.Device != "CPU" {
+		t.Fatalf("encode info=%+v", encoded)
 	}
 	info, err := ProbeMedia(context.Background(), bins, dir, "prev.mp4")
 	if err != nil {

@@ -35,6 +35,18 @@ func TestRewriteSoftwareEncodeNVENC(t *testing.T) {
 	}
 }
 
+func TestPreviewEncodePlanReportsSelectedDevice(t *testing.T) {
+	got := PreviewEncodePlan(Bins{Accel: Accel{
+		Backend: "cuda",
+		Device:  "0",
+		Label:   "NVIDIA L4",
+		H264:    "h264_nvenc",
+	}})
+	if !got.Hardware || got.Encoder != "h264_nvenc" || got.Device != "NVIDIA L4 (0)" {
+		t.Fatalf("preview plan=%+v", got)
+	}
+}
+
 func TestRewriteSoftwareEncodeLeavesCopy(t *testing.T) {
 	accel := Accel{Backend: "cuda", H264: "h264_nvenc"}
 	args := []string{"-y", "-i", "in.mp4", "-c:v", "copy", "-an", "out.mp4"}

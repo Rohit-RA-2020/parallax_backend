@@ -19,6 +19,26 @@ const (
 // PreviewProgress reports how far a preview transcode has gotten.
 type PreviewProgress func(at, duration float64)
 
+// PreviewEncodeInfo identifies the encoder that produced a playback proxy.
+type PreviewEncodeInfo struct {
+	Encoder  string
+	Device   string
+	Hardware bool
+}
+
+// PreviewEncodePlan reports the encoder selected for a playback proxy before
+// FFmpeg runs. The completed result may differ if hardware encoding falls back.
+func PreviewEncodePlan(bins Bins) PreviewEncodeInfo {
+	if bins.Accel.Enabled() {
+		return PreviewEncodeInfo{
+			Encoder:  bins.Accel.H264,
+			Device:   previewDeviceLabel(bins.Accel),
+			Hardware: true,
+		}
+	}
+	return PreviewEncodeInfo{Encoder: "libx264", Device: "CPU"}
+}
+
 // BrowserPlayable is true when a typical Chromium/Firefox <video> tag can
 // decode this file without a proxy. MKV, HEVC, and 10-bit sources are not.
 func BrowserPlayable(rel string, info MediaProbe) bool {
@@ -93,16 +113,23 @@ func PreviewReason(rel string, info MediaProbe) string {
 
 // WritePreview transcodes a browser-safe H.264/AAC MP4 (max 1280px wide, 8-bit).
 func WritePreview(ctx context.Context, bins Bins, workspace, inRel, outRel string, duration float64, onProgress PreviewProgress) error {
+	_, err := WritePreviewWithInfo(ctx, bins, workspace, inRel, outRel, duration, onProgress)
+	return err
+}
+
+// WritePreviewWithInfo transcodes a preview and returns the encoder that
+// actually succeeded, including any CPU fallback performed by Run.
+func WritePreviewWithInfo(ctx context.Context, bins Bins, workspace, inRel, outRel string, duration float64, onProgress PreviewProgress) (PreviewEncodeInfo, error) {
 	if err := os.MkdirAll(filepath.Join(workspace, filepath.Dir(filepath.FromSlash(outRel))), 0o755); err != nil {
-		return err
+		return PreviewEncodeInfo{}, err
 	}
 	scratchDir := filepath.Join(workspace, ".scratch")
 	if err := os.MkdirAll(scratchDir, 0o755); err != nil {
-		return err
+		return PreviewEncodeInfo{}, err
 	}
 	prog, err := os.CreateTemp(scratchDir, "preview-progress-*")
 	if err != nil {
-		return err
+		return PreviewEncodeInfo{}, err
 	}
 	progName := prog.Name()
 	_ = prog.Close()
@@ -134,24 +161,28 @@ func WritePreview(ctx context.Context, bins Bins, workspace, inRel, outRel strin
 	}
 	cmd, err := Validate(args, ValidateOpts{Workspace: workspace})
 	if err != nil {
-		return fmt.Errorf("preview encode: %w", err)
+		return PreviewEncodeInfo{}, fmt.Errorf("preview encode: %w", err)
 	}
 
-	errCh := make(chan error, 1)
+	type outcome struct {
+		result Result
+		err    error
+	}
+	done := make(chan outcome, 1)
 	go func() {
-		_, runErr := Run(ctx, bins, cmd, workspace, previewTimeout)
-		errCh <- runErr
+		result, runErr := Run(ctx, bins, cmd, workspace, previewTimeout)
+		done <- outcome{result: result, err: runErr}
 	}()
 
 	tick := time.NewTicker(400 * time.Millisecond)
 	defer tick.Stop()
 	for {
 		select {
-		case runErr := <-errCh:
-			if runErr != nil && strings.Contains(runErr.Error(), "does not contain any stream") {
+		case finished := <-done:
+			if finished.err != nil && strings.Contains(finished.err.Error(), "does not contain any stream") {
 				return writePreviewVideoOnly(ctx, bins, workspace, inRel, outRel, progRel, duration, onProgress)
 			}
-			return runErr
+			return previewEncodeResult(bins, finished.result), finished.err
 		case <-tick.C:
 			if onProgress == nil {
 				continue
@@ -160,12 +191,12 @@ func WritePreview(ctx context.Context, bins Bins, workspace, inRel, outRel strin
 				onProgress(at, duration)
 			}
 		case <-ctx.Done():
-			return ctx.Err()
+			return PreviewEncodeInfo{}, ctx.Err()
 		}
 	}
 }
 
-func writePreviewVideoOnly(ctx context.Context, bins Bins, workspace, inRel, outRel, progRel string, duration float64, onProgress PreviewProgress) error {
+func writePreviewVideoOnly(ctx context.Context, bins Bins, workspace, inRel, outRel, progRel string, duration float64, onProgress PreviewProgress) (PreviewEncodeInfo, error) {
 	cmd, err := Validate([]string{
 		"ffmpeg", "-y",
 		"-i", inRel,
@@ -182,19 +213,23 @@ func writePreviewVideoOnly(ctx context.Context, bins Bins, workspace, inRel, out
 		outRel,
 	}, ValidateOpts{Workspace: workspace})
 	if err != nil {
-		return fmt.Errorf("preview encode: %w", err)
+		return PreviewEncodeInfo{}, fmt.Errorf("preview encode: %w", err)
 	}
-	errCh := make(chan error, 1)
+	type outcome struct {
+		result Result
+		err    error
+	}
+	done := make(chan outcome, 1)
 	go func() {
-		_, runErr := Run(ctx, bins, cmd, workspace, previewTimeout)
-		errCh <- runErr
+		result, runErr := Run(ctx, bins, cmd, workspace, previewTimeout)
+		done <- outcome{result: result, err: runErr}
 	}()
 	tick := time.NewTicker(400 * time.Millisecond)
 	defer tick.Stop()
 	for {
 		select {
-		case runErr := <-errCh:
-			return runErr
+		case finished := <-done:
+			return previewEncodeResult(bins, finished.result), finished.err
 		case <-tick.C:
 			if onProgress == nil {
 				continue
@@ -203,9 +238,41 @@ func writePreviewVideoOnly(ctx context.Context, bins Bins, workspace, inRel, out
 				onProgress(at, duration)
 			}
 		case <-ctx.Done():
-			return ctx.Err()
+			return PreviewEncodeInfo{}, ctx.Err()
 		}
 	}
+}
+
+func previewEncodeResult(bins Bins, result Result) PreviewEncodeInfo {
+	encoder := ""
+	for i := 0; i+1 < len(result.Args); i++ {
+		if result.Args[i] == "-c:v" || result.Args[i] == "-codec:v" {
+			encoder = strings.TrimSpace(result.Args[i+1])
+		}
+	}
+	if encoder == "" {
+		return PreviewEncodeInfo{}
+	}
+	hardware := isHWEncoderName(encoder)
+	device := "CPU"
+	if hardware {
+		device = previewDeviceLabel(bins.Accel)
+	}
+	return PreviewEncodeInfo{Encoder: encoder, Device: device, Hardware: hardware}
+}
+
+func previewDeviceLabel(accel Accel) string {
+	label := strings.TrimSpace(accel.Label)
+	if label == "" {
+		label = strings.ToUpper(strings.TrimSpace(accel.Backend))
+	}
+	if label == "" {
+		label = "GPU"
+	}
+	if device := strings.TrimSpace(accel.Device); device != "" {
+		return fmt.Sprintf("%s (%s)", label, device)
+	}
+	return label
 }
 
 func readProgressTime(path string) (float64, bool) {
