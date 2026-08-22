@@ -135,6 +135,7 @@ func (e TranscriptEnv) placeSoftCaptions(videoRel, srtRel, langTag, label string
 		"track":       "C1",
 		"created_ids": result.CreatedIDs,
 		"removed_ids": result.RemovedIDs,
+		"timeline":    e.Transaction.Get(),
 		"in_place":    false,
 		"visible":     true,
 		"note":        "Captions are on track C1 and show in the program monitor and sequence export. Do not remux a mov_text stream — the HTML preview cannot display it.",

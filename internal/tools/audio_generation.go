@@ -395,6 +395,7 @@ func (e AudioGenerationEnv) finishGenerated(ctx context.Context, path string, pl
 	}
 	out["placed"] = true
 	out["created_ids"] = created
+	out["timeline"] = e.Transaction.Get()
 	return Result{OK: true, Output: out}
 }
 

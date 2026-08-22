@@ -1,6 +1,7 @@
 package visualreview
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -47,16 +48,36 @@ type Frame struct {
 }
 
 type Finding struct {
-	ID                 string         `json:"id"`
-	Time               float64        `json:"time"`
-	Type               string         `json:"type"`
-	Severity           string         `json:"severity"`
-	Confidence         float64        `json:"confidence"`
-	Title              string         `json:"title"`
-	Detail             string         `json:"detail"`
-	FrameIDs           []string       `json:"frame_ids,omitempty"`
-	SuggestedOperation map[string]any `json:"suggested_operation,omitempty"`
-	Source             string         `json:"source,omitempty"`
+	ID                 string             `json:"id"`
+	Time               float64            `json:"time"`
+	Type               string             `json:"type"`
+	Severity           string             `json:"severity"`
+	Confidence         float64            `json:"confidence"`
+	Title              string             `json:"title"`
+	Detail             string             `json:"detail"`
+	FrameIDs           []string           `json:"frame_ids,omitempty"`
+	SuggestedOperation SuggestedOperation `json:"suggested_operation,omitempty"`
+	Source             string             `json:"source,omitempty"`
+}
+
+// SuggestedOperation accepts the object form requested by the review schema,
+// but tolerates a model returning a prose string. An invalid suggestion must
+// not discard otherwise valid visual findings.
+type SuggestedOperation map[string]any
+
+func (o *SuggestedOperation) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
+		*o = nil
+		return nil
+	}
+	var object map[string]any
+	if err := json.Unmarshal(data, &object); err != nil {
+		*o = nil
+		return nil
+	}
+	*o = object
+	return nil
 }
 
 type Result struct {
@@ -352,7 +373,7 @@ func deterministicFindings(groups [][]Frame) []Finding {
 		}
 		jump := math.Abs(after.AvgLuma - before.AvgLuma)
 		if jump > .28 {
-			out = append(out, Finding{Time: at.Time, Type: "brightness_jump", Severity: "warning", Confidence: math.Min(.99, .65+jump), Title: "Brightness changes abruptly across cut", Detail: fmt.Sprintf("Average luminance changes by %.0f%% across the review point.", jump*100), FrameIDs: ids(group), Source: "deterministic", SuggestedOperation: map[string]any{"type": "update_item", "property": "grade.exposure"}})
+			out = append(out, Finding{Time: at.Time, Type: "brightness_jump", Severity: "warning", Confidence: math.Min(.99, .65+jump), Title: "Brightness changes abruptly across cut", Detail: fmt.Sprintf("Average luminance changes by %.0f%% across the review point.", jump*100), FrameIDs: ids(group), Source: "deterministic", SuggestedOperation: SuggestedOperation{"type": "update_item", "property": "grade.exposure"}})
 		}
 	}
 	return out

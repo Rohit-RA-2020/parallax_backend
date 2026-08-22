@@ -2,6 +2,7 @@ package visualreview
 
 import (
 	"bytes"
+	"encoding/json"
 	"image"
 	"image/color"
 	"image/png"
@@ -10,6 +11,16 @@ import (
 	"parallax/internal/ffmpeg"
 	"parallax/internal/projects"
 )
+
+func TestFindingToleratesStringSuggestedOperation(t *testing.T) {
+	var finding Finding
+	if err := json.Unmarshal([]byte(`{"suggested_operation":"adjust the exposure"}`), &finding); err != nil {
+		t.Fatal(err)
+	}
+	if finding.SuggestedOperation != nil {
+		t.Fatalf("expected unsupported prose suggestion to be ignored, got %#v", finding.SuggestedOperation)
+	}
+}
 
 func TestDeterministicFindingsDetectsBlackFrameAndBrightnessJump(t *testing.T) {
 	group := []Frame{

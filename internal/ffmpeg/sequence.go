@@ -448,7 +448,10 @@ func atempoFilters(rate float64) []string {
 func titleClips(clips []SequenceClip) []SequenceClip {
 	var out []SequenceClip
 	for _, clip := range clips {
-		if clip.Kind == "title" {
+		// A caption with no subtitle source is a manually authored text card.
+		// Render it through the same drawtext path as a title so the exported
+		// sequence matches the editable Program Monitor preview.
+		if clip.Kind == "title" || (clip.Kind == "caption" && strings.TrimSpace(clip.SubtitlePath) == "") {
 			out = append(out, clip)
 		}
 	}
