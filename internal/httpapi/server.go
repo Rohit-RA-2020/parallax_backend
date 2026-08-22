@@ -18,6 +18,7 @@ import (
 	"parallax/internal/projects"
 	"parallax/internal/tools"
 	"parallax/internal/transcript"
+	"parallax/internal/visualreview"
 )
 
 // ProviderFactory builds a ChatProvider from the current LLM settings.
@@ -142,6 +143,8 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("DELETE /v1/projects/{id}/chats/{chatId}", s.handleDeleteChat)
 		mux.HandleFunc("GET /v1/projects/{id}/timeline", s.handleGetTimeline)
 		mux.HandleFunc("PUT /v1/projects/{id}/timeline", s.handlePutTimeline)
+		mux.HandleFunc("POST /v1/projects/{id}/visual-review", s.handleVisualReview)
+		mux.HandleFunc("GET /v1/projects/{id}/visual-reviews/{revision}", s.handleGetVisualReview)
 		mux.HandleFunc("GET /v1/projects/{id}/history", s.handleGetHistory)
 		mux.HandleFunc("POST /v1/projects/{id}/history/undo", s.handleUndoHistory)
 		mux.HandleFunc("POST /v1/projects/{id}/history/redo", s.handleRedoHistory)
@@ -236,6 +239,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	provider := s.NewLLM(llmCfg)
 
 	toolRegistry := s.Tools
 	projectID := strings.TrimSpace(req.ProjectID)
@@ -307,6 +311,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			ProjectID:   projectID,
 			Workspace:   project.Dir,
 			Bins:        s.Bins,
+			Review:      &visualreview.Service{Store: s.Projects, Bins: s.Bins, Vision: provider, RenderWidth: 960, RenderHeight: 540},
 		})
 		tools.RegisterTranscript(toolRegistry, tools.TranscriptEnv{
 			Indexer:     s.Indexer,
@@ -381,7 +386,6 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = stream.Event(agent.NewEvent(agent.EventSession, agent.SessionPayload{SessionID: sess.ID}))
 
-	provider := s.NewLLM(llmCfg)
 	if c, ok := provider.(*llm.CompatClient); ok && c != nil {
 		if c.ExtraHeaders == nil {
 			c.ExtraHeaders = map[string]string{}

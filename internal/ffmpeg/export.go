@@ -66,7 +66,7 @@ func (s *ExportSpec) Normalize() error {
 		s.Resolution = "source"
 	}
 	switch s.Resolution {
-	case "source", "3840x2160", "1920x1080", "1280x720", "854x480":
+	case "source", "3840x2160", "1920x1080", "1280x720", "960x540", "854x480":
 	default:
 		return fmt.Errorf("unsupported resolution %q", s.Resolution)
 	}
@@ -323,6 +323,8 @@ func parseSize(res string) (int, int, bool) {
 		return 1280, 720, true
 	case "854x480":
 		return 854, 480, true
+	case "960x540":
+		return 960, 540, true
 	}
 	return 0, 0, false
 }

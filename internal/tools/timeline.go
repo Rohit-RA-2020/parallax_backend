@@ -10,6 +10,7 @@ import (
 	"parallax/internal/ffmpeg"
 	"parallax/internal/llm"
 	"parallax/internal/projects"
+	"parallax/internal/visualreview"
 )
 
 type TimelineEnv struct {
@@ -18,6 +19,7 @@ type TimelineEnv struct {
 	ProjectID   string
 	Workspace   string
 	Bins        ffmpeg.Bins
+	Review      *visualreview.Service
 }
 
 func RegisterTimeline(reg *Registry, env TimelineEnv) {
@@ -54,6 +56,11 @@ func RegisterTimeline(reg *Registry, env TimelineEnv) {
 	reg.Register(llm.NewFunctionTool("redo_project_change", "Stage a redo. Provide target_revision when multiple alternate futures exist.", json.RawMessage(`{"type":"object","properties":{"target_revision":{"type":"integer"}}}`)), env.redo)
 	reg.Register(llm.NewFunctionTool("restore_project_revision", "Stage restoration of a specific persistent project revision.", json.RawMessage(`{"type":"object","properties":{"revision":{"type":"integer"}},"required":["revision"]}`)), env.restore)
 	reg.Register(llm.NewFunctionTool("create_project_checkpoint", "Create a named checkpoint at the state committed by this request.", json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)), env.checkpoint)
+	reg.Register(llm.NewFunctionTool(
+		"review_timeline",
+		"Inspect rendered frames around cuts, transitions, titles, captions, and other critical visual points. Use mode full for a complete visual review or changed for the latest edit. This is advisory and never changes the timeline.",
+		json.RawMessage(`{"type":"object","properties":{"revision":{"type":"integer"},"mode":{"type":"string","enum":["changed","full"]},"focus_times":{"type":"array","items":{"type":"number"}}}}`),
+	), env.reviewTimeline)
 }
 
 func (e TimelineEnv) getHistory(_ context.Context, _ json.RawMessage) Result {
@@ -132,6 +139,32 @@ func (e TimelineEnv) getTimeline(_ context.Context, _ json.RawMessage) Result {
 	return Result{OK: true, Output: e.Transaction.Get()}
 }
 
+func (e TimelineEnv) reviewTimeline(ctx context.Context, raw json.RawMessage) Result {
+	if e.Review == nil || e.Transaction == nil {
+		return Result{OK: false, Error: "visual review is unavailable"}
+	}
+	var body struct {
+		Revision   int       `json:"revision"`
+		Mode       string    `json:"mode"`
+		FocusTimes []float64 `json:"focus_times"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return Result{OK: false, Error: err.Error()}
+	}
+	mode := visualreview.Mode(body.Mode)
+	if mode == "" {
+		mode = visualreview.ModeChanged
+	}
+	doc := e.Transaction.Get()
+	result, err := e.Review.ReviewDocument(ctx, visualreview.Request{
+		ProjectID: e.ProjectID, Revision: body.Revision, Mode: mode, FocusTimes: body.FocusTimes,
+	}, doc, nil, false)
+	if err != nil {
+		return Result{OK: false, Error: err.Error()}
+	}
+	return Result{OK: true, Output: result}
+}
+
 func (e TimelineEnv) placeMedia(ctx context.Context, raw json.RawMessage) Result {
 	if e.Transaction == nil {
 		return Result{OK: false, Error: "timeline transaction is unavailable"}
@@ -153,7 +186,7 @@ func (e TimelineEnv) placeMedia(ctx context.Context, raw json.RawMessage) Result
 	if err != nil {
 		return Result{OK: false, Error: err.Error()}
 	}
-	return e.applyOps(ops, "Media is on the timeline. Video is on V1; sound is a linked A1 clip when the file has audio.")
+	return e.applyOps(ctx, ops, "Media is on the timeline. Video is on V1; sound is a linked A1 clip when the file has audio.")
 }
 
 func (e TimelineEnv) editTimeline(ctx context.Context, raw json.RawMessage) Result {
@@ -176,10 +209,11 @@ func (e TimelineEnv) editTimeline(ctx context.Context, raw json.RawMessage) Resu
 	if err != nil {
 		return Result{OK: false, Error: err.Error()}
 	}
-	return e.applyOps(ops, "The timeline change is staged and will commit with the current Director request.")
+	return e.applyOps(ctx, ops, "The timeline change is staged and will commit with the current Director request.")
 }
 
-func (e TimelineEnv) applyOps(ops []projects.TimelineOperation, note string) Result {
+func (e TimelineEnv) applyOps(ctx context.Context, ops []projects.TimelineOperation, note string) Result {
+	previous := e.Transaction.Get()
 	result, err := e.Transaction.Apply(ops)
 	if err != nil {
 		return Result{OK: false, Error: err.Error()}
@@ -188,10 +222,21 @@ func (e TimelineEnv) applyOps(ops []projects.TimelineOperation, note string) Res
 		e.Transaction.Focus(id, frame)
 		result.Timeline = e.Transaction.Get()
 	}
-	return Result{OK: true, Output: map[string]any{
+	output := map[string]any{
 		"timeline": result.Timeline, "created_ids": result.CreatedIDs, "removed_ids": result.RemovedIDs,
 		"staged": true, "note": note,
-	}}
+	}
+	if e.Review != nil {
+		review, reviewErr := e.Review.ReviewDocument(ctx, visualreview.Request{
+			ProjectID: e.ProjectID, Revision: result.Timeline.Revision, Mode: visualreview.ModeChanged,
+		}, result.Timeline, &previous, false)
+		if reviewErr != nil {
+			output["visual_review_error"] = reviewErr.Error()
+		} else {
+			output["visual_review"] = review
+		}
+	}
+	return Result{OK: true, Output: output}
 }
 
 func (e TimelineEnv) expandMediaOps(ctx context.Context, doc projects.Timeline, ops []projects.TimelineOperation) ([]projects.TimelineOperation, error) {

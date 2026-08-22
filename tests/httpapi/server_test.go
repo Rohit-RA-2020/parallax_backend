@@ -71,6 +71,43 @@ func TestChatPassesThinkingEffort(t *testing.T) {
 	}
 }
 
+func TestVisualReviewPersistsRevisionLinkedResult(t *testing.T) {
+	s := testServer(t, fakeProvider{deltas: []llm.Delta{{Content: `{"findings":[]}`, FinishReason: "stop"}}})
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	project, err := s.Projects.Create("Review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"revision":0,"mode":"full"}`
+	resp, err := http.Post(ts.URL+"/v1/projects/"+project.ID+"/visual-review", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%s", resp.Status)
+	}
+	var result struct {
+		Revision int    `json:"revision"`
+		Status   string `json:"status"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "degraded" || result.Revision != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+	get, err := http.Get(ts.URL + "/v1/projects/" + project.ID + "/visual-reviews/0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer get.Body.Close()
+	if get.StatusCode != http.StatusOK {
+		t.Fatalf("get status=%s", get.Status)
+	}
+}
+
 func TestChatAcceptsAttachedImage(t *testing.T) {
 	var seen llm.Request
 	s := testServer(t, fakeProvider{
