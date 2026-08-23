@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install Docker when needed, fetch Parallax, build the backend image, and
-# provision its private Qdrant dependency.
+# provision its Qdrant dependency.
 #
 # Usage (Ubuntu/Debian):
 #   curl -fsSL https://raw.githubusercontent.com/Rohit-RA-2020/parallax_backend/main/scripts/bootstrap-vm.sh | bash
@@ -107,16 +107,27 @@ $DCMD volume inspect parallax_workspace >/dev/null 2>&1 || $DCMD volume create p
 $DCMD volume inspect parallax_data >/dev/null 2>&1 || $DCMD volume create parallax_data >/dev/null
 $DCMD volume inspect parallax_qdrant >/dev/null 2>&1 || $DCMD volume create parallax_qdrant >/dev/null
 
-if $DCMD container inspect "$QDRANT_NAME" >/dev/null 2>&1; then
-  $DCMD network connect "$NETWORK_NAME" "$QDRANT_NAME" >/dev/null 2>&1 || true
-  $DCMD start "$QDRANT_NAME" >/dev/null
-else
+start_qdrant() {
   $DCMD run -d \
     --name "$QDRANT_NAME" \
     --restart unless-stopped \
     --network "$NETWORK_NAME" \
+    --publish 0.0.0.0:6333:6333 \
     --volume parallax_qdrant:/qdrant/storage \
     "$QDRANT_IMAGE" >/dev/null
+}
+
+if $DCMD container inspect "$QDRANT_NAME" >/dev/null 2>&1; then
+  if $DCMD port "$QDRANT_NAME" 6333/tcp 2>/dev/null | grep -qx '0.0.0.0:6333'; then
+    $DCMD network connect "$NETWORK_NAME" "$QDRANT_NAME" >/dev/null 2>&1 || true
+    $DCMD start "$QDRANT_NAME" >/dev/null
+  else
+    log "Recreating Qdrant with network access on port 6333"
+    $DCMD rm -f "$QDRANT_NAME" >/dev/null
+    start_qdrant
+  fi
+else
+  start_qdrant
 fi
 
 if [[ ! -f "$PARALLAX_DIR/.env" ]]; then
@@ -146,4 +157,5 @@ Parallax backend image is ready.
      ${PARALLAX_IMAGE}
 
 The API will be available at http://localhost:8080.
+Qdrant will be available at http://<host-ip>:6333. Restrict port 6333 to trusted IPs.
 EOF

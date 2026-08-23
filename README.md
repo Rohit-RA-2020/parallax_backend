@@ -201,7 +201,9 @@ When it finishes, edit the generated `~/parallax_backend/.env` and run the
 detached `docker run` command printed by the script. The image includes the Go
 server, FFmpeg, fonts, Python, and faster-whisper; it does not include or serve
 the frontend. On hosts with the NVIDIA Container Runtime, the printed command
-automatically includes `--gpus all`.
+automatically includes `--gpus all`. Qdrant is published on `0.0.0.0:6333` for
+network access; restrict that port to trusted client IPs in the host firewall or
+cloud security group because Qdrant is unauthenticated by default.
 
 Create projects from the frontend and upload media there. Each project gets an
 isolated directory under `./workspace/projects/<project-id>`; Director tools are
