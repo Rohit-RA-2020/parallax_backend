@@ -187,6 +187,22 @@ cp .env.example .env   # then put a key in LLM_API_KEY or XAI_API_KEY
 go run ./cmd/server
 ```
 
+### Docker deployment (backend only)
+
+On an Ubuntu or Debian host, the bootstrap installs Docker if needed, clones
+or updates this repository, builds the backend image, and provisions Qdrant
+plus persistent Docker volumes:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Rohit-RA-2020/parallax_backend/main/scripts/bootstrap-vm.sh | bash
+```
+
+When it finishes, edit the generated `~/parallax_backend/.env` and run the
+detached `docker run` command printed by the script. The image includes the Go
+server, FFmpeg, fonts, Python, and faster-whisper; it does not include or serve
+the frontend. On hosts with the NVIDIA Container Runtime, the printed command
+automatically includes `--gpus all`.
+
 Create projects from the frontend and upload media there. Each project gets an
 isolated directory under `./workspace/projects/<project-id>`; Director tools are
 scoped to that directory for the whole session.

@@ -1,0 +1,9 @@
+.git
+.gitignore
+.env
+bin
+scripts/.venv
+workspace
+data/settings.json
+*.log
+coverage.out
