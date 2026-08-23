@@ -1,6 +1,7 @@
 .env
 /bin/
-/data/
+/data/*
+!/data/elevenlabs-voices.json
 /workspace/
 /scripts/.venv/
 *.log

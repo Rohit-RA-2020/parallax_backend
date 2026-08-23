@@ -94,6 +94,10 @@ else
   git clone --depth 1 --branch "$PARALLAX_REF" "$PARALLAX_REPO" "$PARALLAX_DIR"
 fi
 
+[[ -f "$PARALLAX_DIR/Dockerfile" ]] || die "Dockerfile is missing from $PARALLAX_DIR"
+[[ -f "$PARALLAX_DIR/data/elevenlabs-voices.json" ]] || \
+  die "bundled voice catalog is missing from $PARALLAX_DIR/data"
+
 log "Building $PARALLAX_IMAGE"
 $DCMD build --pull --tag "$PARALLAX_IMAGE" "$PARALLAX_DIR"
 
