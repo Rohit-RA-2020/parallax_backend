@@ -23,6 +23,9 @@ type TimelineOperation struct {
 	Frame          int                 `json:"frame,omitempty"`
 	Path           string              `json:"path,omitempty"`
 	At             string              `json:"at,omitempty"`
+	VolumeDB       *float64            `json:"volume_db,omitempty"`
+	Muted          *bool               `json:"muted,omitempty"`
+	Pan            *float64            `json:"pan,omitempty"`
 }
 
 type OperationResult struct {
@@ -151,6 +154,54 @@ func ApplyTimelineOperations(doc Timeline, operations []TimelineOperation) (Oper
 			result.Timeline.Clips[index] = clip
 			result.Timeline.Clips = append(result.Timeline.Clips, right)
 			result.CreatedIDs = append(result.CreatedIDs, right.ID)
+		case "set_audio":
+			if op.VolumeDB == nil && op.Muted == nil && op.Pan == nil {
+				err = errors.New("set_audio requires volume_db, muted, or pan")
+				break
+			}
+			matched := 0
+			for i := range result.Timeline.Clips {
+				clip := &result.Timeline.Clips[i]
+				if op.ID != "" {
+					if clip.ID != op.ID {
+						continue
+					}
+				} else if op.Track != "" {
+					if clip.Track != op.Track {
+						continue
+					}
+				} else {
+					err = errors.New("set_audio requires id or track")
+					break
+				}
+				if clip.Kind != "audio" && clip.Track != "A1" && clip.Track != "A2" {
+					err = fmt.Errorf("timeline item %q is not an audio clip", clip.ID)
+					break
+				}
+				if clip.Audio == nil {
+					clip.Audio = &TimelineAudio{}
+				}
+				if op.VolumeDB != nil {
+					clip.Audio.VolumeDB = *op.VolumeDB
+				}
+				if op.Muted != nil {
+					clip.Audio.Muted = *op.Muted
+				}
+				if op.Pan != nil {
+					clip.Audio.Pan = *op.Pan
+				}
+				matched++
+				if op.ID != "" {
+					break
+				}
+			}
+			if err == nil && matched == 0 {
+				if op.ID != "" {
+					err = fmt.Errorf("timeline item %q not found", op.ID)
+				} else {
+					err = fmt.Errorf("audio track %q has no clips", op.Track)
+				}
+			}
 		case "add_transition":
 			if op.Transition == nil {
 				err = errors.New("add_transition requires transition")

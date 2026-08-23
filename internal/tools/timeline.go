@@ -43,7 +43,7 @@ func RegisterTimeline(reg *Registry, env TimelineEnv) {
 	), env.placeMedia)
 	reg.Register(llm.NewFunctionTool(
 		"edit_timeline",
-		"Apply one atomic batch of validated non-destructive timeline operations. operations_json must be a JSON array. Each object needs type and the fields for that operation. Types: place_media uses path; add_item/update_item use item; remove_items uses ids; move_item uses id/start_frame/track; trim_item uses id and timing fields; split_item uses id/frame; transition operations use transition or id. For imported video/audio/images prefer place_media. Use this for titles, caption size (C1 title.font_size and transform.scale), trims, moves, grades, keyframes, and transitions.",
+		"Apply one atomic batch of validated non-destructive timeline operations. operations_json must be a JSON array. Each object needs type and the fields for that operation. Types: place_media uses path; add_item/update_item use item; set_audio uses an audio clip id (or A1/A2 track) plus volume_db, muted, or pan; remove_items uses ids; move_item uses id/start_frame/track; trim_item uses id and timing fields; split_item uses id/frame; transition operations use transition or id. For imported video/audio/images prefer place_media. To lower volume use set_audio on the linked A1/A2 audio clip with a negative volume_db such as -12. Use this for titles, caption size (C1 title.font_size and transform.scale), trims, moves, grades, keyframes, cuts, and transitions.",
 		json.RawMessage(`{
 			"type":"object",
 			"properties":{

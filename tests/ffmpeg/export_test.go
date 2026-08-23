@@ -90,6 +90,21 @@ func TestBuildSequenceArgsCompositesProgram(t *testing.T) {
 	}
 }
 
+func TestBuildSequenceArgsAppliesAudioGain(t *testing.T) {
+	args, err := BuildSequenceArgs(ExportSpec{
+		Source: SequenceSource, Format: "mp4", Quality: "draft", Resolution: "1280x720", FPS: 24, Audio: true,
+	}, []SequenceClip{
+		{Track: "V1", Kind: "video", Path: "media/a.mp4", Duration: 2},
+		{Track: "A1", Kind: "audio", Path: "media/a.mp4", Duration: 2, VolumeDB: -12},
+	}, "exports/seq.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined := strings.Join(args, " "); !strings.Contains(joined, "volume=-12dB") {
+		t.Fatalf("audio gain missing from export: %s", joined)
+	}
+}
+
 func TestBuildSequenceArgsBurnsCaptionTrack(t *testing.T) {
 	args, err := BuildSequenceArgs(ExportSpec{
 		Source:     SequenceSource,

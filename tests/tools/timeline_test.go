@@ -44,6 +44,61 @@ func TestTimelineToolStagesThenCommitsOneRevision(t *testing.T) {
 	}
 }
 
+func TestTimelineToolSetsAudioGainWithoutReplacingClip(t *testing.T) {
+	store, err := projects.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := store.Create("Mix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.SaveTimeline(project.ID, projects.Timeline{FPS: 24, Clips: []projects.TimelineClip{{
+		ID: "music", Name: "Music", Track: "A1", Kind: "audio", DurationFrames: 240,
+		MediaPath: "media/music.wav", MediaType: "audio", LinkID: "music-link",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := store.BeginTimelineTransaction(project.ID, projects.CommitMeta{Actor: "agent", Summary: "Lower music"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := tools.NewRegistry()
+	tools.RegisterTimeline(registry, tools.TimelineEnv{Transaction: tx})
+	result := registry.Execute(t.Context(), "edit_timeline", `{"operations_json":"[{\"type\":\"set_audio\",\"id\":\"music\",\"volume_db\":-12}]"}`)
+	if !result.OK {
+		t.Fatalf("edit_timeline: %s", result.Error)
+	}
+	doc, changed, err := tx.Commit()
+	if err != nil || !changed {
+		t.Fatalf("commit changed=%v err=%v", changed, err)
+	}
+	clip := doc.Clips[0]
+	if clip.Audio == nil || clip.Audio.VolumeDB != -12 {
+		t.Fatalf("audio=%+v", clip.Audio)
+	}
+	if clip.Name != "Music" || clip.MediaPath != "media/music.wav" || clip.LinkID != "music-link" || clip.DurationFrames != 240 {
+		t.Fatalf("set_audio replaced clip fields: %+v", clip)
+	}
+}
+
+func TestTimelineToolRejectsInvalidAudioGain(t *testing.T) {
+	store, _ := projects.NewStore(t.TempDir())
+	project, _ := store.Create("Mix")
+	_, err := store.SaveTimeline(project.ID, projects.Timeline{FPS: 24, Clips: []projects.TimelineClip{{ID: "music", Track: "A1", Kind: "audio", DurationFrames: 24}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, _ := store.BeginTimelineTransaction(project.ID, projects.CommitMeta{Actor: "agent"})
+	registry := tools.NewRegistry()
+	tools.RegisterTimeline(registry, tools.TimelineEnv{Transaction: tx})
+	result := registry.Execute(t.Context(), "edit_timeline", `{"operations_json":"[{\"type\":\"set_audio\",\"id\":\"music\",\"volume_db\":20}]"}`)
+	if result.OK {
+		t.Fatal("out-of-range gain was accepted")
+	}
+}
+
 func TestPlaceMediaPutsLinkedAudioAndFocusesPreview(t *testing.T) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		t.Skip("ffmpeg not installed")
