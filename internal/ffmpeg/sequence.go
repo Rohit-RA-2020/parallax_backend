@@ -451,7 +451,15 @@ func titleClips(clips []SequenceClip) []SequenceClip {
 		// A caption with no subtitle source is a manually authored text card.
 		// Render it through the same drawtext path as a title so the exported
 		// sequence matches the editable Program Monitor preview.
-		if clip.Kind == "title" || (clip.Kind == "caption" && strings.TrimSpace(clip.SubtitlePath) == "") {
+		// Timed caption clips keep their SRT in Path/MediaType even when
+		// SubtitlePath is deliberately cleared for soft/disabled exports. Do
+		// not mistake their display name (for example, "English captions")
+		// for text that belongs in the picture.
+		manualCaption := clip.Kind == "caption" &&
+			strings.TrimSpace(clip.SubtitlePath) == "" &&
+			strings.TrimSpace(clip.Path) == "" &&
+			clip.MediaType != "subtitle"
+		if clip.Kind == "title" || manualCaption {
 			out = append(out, clip)
 		}
 	}

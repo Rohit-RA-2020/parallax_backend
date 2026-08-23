@@ -2,9 +2,10 @@
 # Bootstrap a GPU VM for the Parallax backend.
 #
 # Installs host tools, Docker, Qdrant (localhost only), Go, Whisper,
-# and an NVENC-capable ffmpeg when the system build lacks it. Clones
-# this repo if needed, writes a starter .env, and prints what you
-# still have to fill in.
+# and a driver-compatible NVENC-capable ffmpeg when the system build lacks it.
+# Clones this repo if needed, writes a starter .env, and prints what you still
+# have to fill in. Older NVIDIA drivers use the compatible FFmpeg release
+# branch; unsupported drivers fall back to CPU encoding without failing setup.
 #
 # Usage (Ubuntu 22.04 / 24.04):
 #   curl -fsSL https://raw.githubusercontent.com/Rohit-RA-2020/parallax_backend/main/scripts/bootstrap-vm.sh | bash
@@ -131,10 +132,82 @@ go_new_enough() {
   [[ -n "$current" && "$(printf '%s\n%s\n' 1.25.8 "$current" | sort -V | head -1)" == "1.25.8" ]]
 }
 
+nvidia_driver_version() {
+  have nvidia-smi || return 1
+  local raw
+  raw="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits 2>/dev/null)" || return 1
+  printf '%s\n' "$raw" | sed -n '1p' | tr -d '[:space:]'
+}
+
+nvidia_driver_major() {
+  local version="${1:-}"
+  version="${version%%.*}"
+  [[ "$version" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$version"
+}
+
+nvidia_driver_uses_server_packages() {
+  dpkg -l 2>/dev/null \
+    | awk '$1 == "ii" && $2 ~ /^(nvidia-(driver|headless|utils)|libnvidia-encode)-/ {print $2}' \
+    | grep -- '-server' >/dev/null
+}
+
+nvidia_encode_runtime_present() {
+  ldconfig -p 2>/dev/null | grep 'libnvidia-encode.so.1' >/dev/null
+}
+
+ensure_nvidia_encode_runtime() {
+  local version major package
+  version="$(nvidia_driver_version || true)"
+  major="$(nvidia_driver_major "$version" || true)"
+  [[ -n "$major" ]] || return 0
+  nvidia_encode_runtime_present && return 0
+
+  package="libnvidia-encode-${major}"
+  if nvidia_driver_uses_server_packages; then
+    package+="-server"
+  fi
+  if ! apt-cache show "$package" >/dev/null 2>&1; then
+    warn "NVIDIA driver ${version} is present, but ${package} is unavailable"
+    return 0
+  fi
+  log "Installing NVIDIA NVENC runtime ${package}"
+  as_root apt-get install -y --no-install-recommends "$package"
+  as_root ldconfig || true
+}
+
+ffmpeg_build_for_driver() {
+  local driver_major="${1:-}"
+  local arch="${2:-}"
+  [[ "$driver_major" =~ ^[0-9]+$ ]] || return 1
+
+  local suffix
+  case "$arch" in
+    x86_64) suffix="linux64" ;;
+    aarch64|arm64) suffix="linuxarm64" ;;
+    *) return 1 ;;
+  esac
+
+  if (( driver_major >= 610 )); then
+    printf 'ffmpeg-master-latest-%s-gpl.tar.xz\n' "$suffix"
+  elif (( driver_major >= 570 )); then
+    printf 'ffmpeg-n8.1-latest-%s-gpl-8.1.tar.xz\n' "$suffix"
+  else
+    return 1
+  fi
+}
+
 ffmpeg_has_nvenc() {
   local bin="${1:-ffmpeg}"
-  have "$bin" || return 1
-  "$bin" -hide_banner -encoders 2>/dev/null | grep -q 'h264_nvenc'
+  if [[ "$bin" != */* ]]; then
+    have "$bin" || return 1
+  elif [[ ! -x "$bin" ]]; then
+    return 1
+  fi
+  "$bin" -hide_banner -encoders 2>/dev/null | grep 'h264_nvenc' >/dev/null || return 1
+  "$bin" -hide_banner -loglevel error \
+    -f lavfi -i color=c=black:s=1280x720:d=1 \
+    -frames:v 1 -c:v h264_nvenc -f null - >/dev/null 2>&1
 }
 
 upsert_env() {
@@ -202,8 +275,7 @@ print_checks() {
   if have nvidia-smi && nvidia-smi >/dev/null 2>&1; then
     ok "NVIDIA driver: $(nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader | head -1)"
   else
-    fail "nvidia-smi not working — install the NVIDIA driver before GPU tests"
-    issues=$((issues + 1))
+    warn "nvidia-smi is not available — GPU acceleration will be disabled"
   fi
 
   local ff="ffmpeg"
@@ -214,9 +286,8 @@ print_checks() {
   fi
   if ffmpeg_has_nvenc "$ff"; then
     ok "ffmpeg NVENC via $ff ($($ff -version 2>/dev/null | head -1))"
-  elif have ffmpeg; then
-    fail "ffmpeg has no h264_nvenc ($ff). Exports will fall back to CPU."
-    issues=$((issues + 1))
+  elif [[ -x "$ff" ]] || have ffmpeg; then
+    warn "ffmpeg NVENC is unavailable in $ff — exports will use CPU"
   else
     fail "ffmpeg is not installed"
     issues=$((issues + 1))
@@ -316,6 +387,8 @@ as_root apt-get install -y --no-install-recommends \
   apt-transport-https software-properties-common
 ok "base packages"
 
+ensure_nvidia_encode_runtime
+
 if ! go_new_enough; then
   log "Installing Go"
   arch="$(uname -m)"
@@ -405,13 +478,20 @@ if [[ "${SKIP_FFMPEG_NVENC:-0}" != "1" ]]; then
     FFPROBE_BIN_VALUE="${FFMPEG_OPT_DIR}/bin/ffprobe"
     ok "using ${FFMPEG_OPT_DIR}"
   else
-    log "Installing a static ffmpeg build with NVENC (BtbN)"
+    log "Selecting a static ffmpeg build compatible with the NVIDIA driver"
     arch="$(uname -m)"
-    case "$arch" in
-      x86_64) ffbuild="ffmpeg-master-latest-linux64-gpl.tar.xz" ;;
-      aarch64|arm64) ffbuild="ffmpeg-master-latest-linuxarm64-gpl.tar.xz" ;;
-      *) warn "no NVENC static build for $arch"; ffbuild="" ;;
-    esac
+    driver_version="$(nvidia_driver_version || true)"
+    driver_major="$(nvidia_driver_major "$driver_version" || true)"
+    ffbuild="$(ffmpeg_build_for_driver "$driver_major" "$arch" || true)"
+    if [[ -z "$ffbuild" ]]; then
+      if [[ -n "$driver_version" ]]; then
+        warn "NVIDIA driver ${driver_version} is older than the supported static NVENC builds"
+      else
+        warn "NVIDIA driver not detected; keeping the system ffmpeg and using CPU fallback"
+      fi
+    else
+      ok "using ${ffbuild} for NVIDIA driver ${driver_version}"
+    fi
     if [[ -n "$ffbuild" ]]; then
       tmp="$(mktemp -d)"
       curl -fL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${ffbuild}" -o "$tmp/ffmpeg.tar.xz"
@@ -427,7 +507,9 @@ if [[ "${SKIP_FFMPEG_NVENC:-0}" != "1" ]]; then
       if ffmpeg_has_nvenc "$FFMPEG_BIN_VALUE"; then
         ok "installed NVENC ffmpeg at $FFMPEG_BIN_VALUE"
       else
-        warn "installed $FFMPEG_BIN_VALUE but h264_nvenc is still missing (driver?)"
+        warn "installed $FFMPEG_BIN_VALUE but the NVENC runtime test failed; using CPU fallback"
+        FFMPEG_BIN_VALUE="ffmpeg"
+        FFPROBE_BIN_VALUE="ffprobe"
       fi
     fi
   fi
@@ -481,17 +563,19 @@ upsert_env "$ENV_FILE" WHISPER_PYTHON "./scripts/.venv/bin/python"
 upsert_env "$ENV_FILE" WHISPER_SCRIPT "./scripts/transcribe.py"
 upsert_env "$ENV_FILE" WHISPER_MODEL "large-v3-turbo"
 upsert_env "$ENV_FILE" WHISPER_COMPUTE "int8"
-if have nvidia-smi && nvidia-smi >/dev/null 2>&1; then
+upsert_env "$ENV_FILE" FFMPEG_BIN "$FFMPEG_BIN_VALUE"
+upsert_env "$ENV_FILE" FFPROBE_BIN "$FFPROBE_BIN_VALUE"
+if have nvidia-smi && nvidia-smi >/dev/null 2>&1 && ffmpeg_has_nvenc "$FFMPEG_BIN_VALUE"; then
   upsert_env "$ENV_FILE" WHISPER_DEVICE "cuda"
   upsert_env "$ENV_FILE" FFMPEG_HWACCEL "cuda"
 else
   upsert_env "$ENV_FILE" WHISPER_DEVICE "auto"
   upsert_env "$ENV_FILE" FFMPEG_HWACCEL "auto"
-  warn "No working nvidia-smi; left Whisper/ffmpeg on auto"
-fi
-if [[ "$FFMPEG_BIN_VALUE" != "ffmpeg" ]]; then
-  upsert_env "$ENV_FILE" FFMPEG_BIN "$FFMPEG_BIN_VALUE"
-  upsert_env "$ENV_FILE" FFPROBE_BIN "$FFPROBE_BIN_VALUE"
+  if have nvidia-smi && nvidia-smi >/dev/null 2>&1; then
+    warn "NVENC is unavailable; left Whisper/ffmpeg on auto"
+  else
+    warn "No working nvidia-smi; left Whisper/ffmpeg on auto"
+  fi
 fi
 
 log "Building server"

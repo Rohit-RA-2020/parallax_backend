@@ -140,7 +140,7 @@ func TestBuildSequenceArgsMuxesSelectableTrack(t *testing.T) {
 		}},
 	}, []SequenceClip{
 		{Track: "V1", Kind: "video", Path: "media/a.mp4", Start: 0, Duration: 2},
-		{Track: "C1", Kind: "caption", Start: 0, Duration: 2},
+		{Track: "C1", Kind: "caption", Name: "English captions", Path: ".parallax/captions/a.en.srt", MediaType: "subtitle", Start: 0, Duration: 2},
 	}, "exports/seq.mp4")
 	if err != nil {
 		t.Fatal(err)
@@ -148,6 +148,9 @@ func TestBuildSequenceArgsMuxesSelectableTrack(t *testing.T) {
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "subtitles=") {
 		t.Fatalf("soft export should not burn: %s", joined)
+	}
+	if strings.Contains(joined, "drawtext=") || strings.Contains(joined, "English captions") {
+		t.Fatalf("soft export should not draw the timed caption track label: %s", joined)
 	}
 	if !strings.Contains(joined, "-i .scratch/export-cap-hi.srt") {
 		t.Fatalf("missing subtitle input: %s", joined)
@@ -160,6 +163,28 @@ func TestBuildSequenceArgsMuxesSelectableTrack(t *testing.T) {
 	}
 	if _, err := Validate(args, ValidateOpts{Workspace: t.TempDir()}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestBuildSequenceArgsOmitsTimedCaptionTrackWhenDisabled(t *testing.T) {
+	args, err := BuildSequenceArgs(ExportSpec{
+		Source:     SequenceSource,
+		Format:     "mp4",
+		Quality:    "draft",
+		Resolution: "1280x720",
+		FPS:        24,
+		Audio:      false,
+		Captions:   "none",
+	}, []SequenceClip{
+		{Track: "V1", Kind: "video", Path: "media/a.mp4", Start: 0, Duration: 2},
+		{Track: "C1", Kind: "caption", Name: "English captions", Path: ".parallax/captions/a.en.srt", MediaType: "subtitle", Start: 0, Duration: 2},
+	}, "exports/seq.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "drawtext=") || strings.Contains(joined, "English captions") || strings.Contains(joined, "-c:s") {
+		t.Fatalf("disabled timed captions leaked into the picture or output tracks: %s", joined)
 	}
 }
 
