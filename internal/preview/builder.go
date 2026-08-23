@@ -28,15 +28,16 @@ type Builder struct {
 	Bins     ffmpeg.Bins
 	Logger   *slog.Logger
 
-	mu     sync.Mutex
-	diskMu sync.Mutex
-	live   map[string]Status
-	queue  chan previewJob
-	stop   chan struct{}
-	cancel context.CancelFunc
-	ctx    context.Context
-	run    bool
-	wg     sync.WaitGroup
+	mu      sync.Mutex
+	diskMu  sync.Mutex
+	live    map[string]Status
+	queue   chan previewJob
+	stop    chan struct{}
+	cancel  context.CancelFunc
+	ctx     context.Context
+	run     bool
+	wg      sync.WaitGroup
+	pending map[string]bool
 }
 
 type previewJob struct {
@@ -67,8 +68,9 @@ func (b *Builder) Start() {
 	b.ctx, b.cancel = context.WithCancel(context.Background())
 	b.run = true
 	b.mu.Unlock()
-	b.wg.Add(1)
+	b.wg.Add(2)
 	go b.loop()
+	go b.recoveryLoop()
 }
 
 // Close stops the worker.
@@ -98,6 +100,12 @@ func (b *Builder) Enqueue(projectID, rel string) {
 		return
 	}
 	b.Start()
+	b.mu.Lock()
+	alreadyPending := b.pending[previewPendingKey(projectID, rel)]
+	b.mu.Unlock()
+	if alreadyPending {
+		return
+	}
 	plan := ffmpeg.PreviewEncodePlan(b.Bins)
 	enqueued := time.Now().UTC()
 	b.Mark(projectID, rel, Status{
@@ -108,10 +116,36 @@ func (b *Builder) Enqueue(projectID, rel string) {
 		Pipeline:  plan.Pipeline,
 		StartedAt: enqueued,
 	})
-	select {
-	case b.queue <- previewJob{projectID: projectID, rel: rel, enqueued: enqueued}:
-	case <-b.stop:
+	b.tryEnqueue(previewJob{projectID: projectID, rel: rel, enqueued: enqueued})
+}
+
+func previewPendingKey(projectID, rel string) string { return projectID + "\n" + rel }
+
+func (b *Builder) tryEnqueue(job previewJob) {
+	key := previewPendingKey(job.projectID, job.rel)
+	b.mu.Lock()
+	if b.pending == nil {
+		b.pending = map[string]bool{}
 	}
+	if b.pending[key] {
+		b.mu.Unlock()
+		return
+	}
+	b.pending[key] = true
+	b.mu.Unlock()
+	select {
+	case b.queue <- job:
+	case <-b.stop:
+		b.clearPending(job)
+	default:
+		b.clearPending(job)
+	}
+}
+
+func (b *Builder) clearPending(job previewJob) {
+	b.mu.Lock()
+	delete(b.pending, previewPendingKey(job.projectID, job.rel))
+	b.mu.Unlock()
 }
 
 func (b *Builder) loop() {
@@ -122,8 +156,54 @@ func (b *Builder) loop() {
 			return
 		case job := <-b.queue:
 			b.runJob(job)
+			b.clearPending(job)
 		}
 	}
+}
+
+func (b *Builder) recoveryLoop() {
+	defer b.wg.Done()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	b.recoverPending()
+	for {
+		select {
+		case <-b.stop:
+			return
+		case <-ticker.C:
+			b.recoverPending()
+		}
+	}
+}
+
+func (b *Builder) recoverPending() {
+	if b == nil || b.Projects == nil {
+		return
+	}
+	for _, project := range b.Projects.List() {
+		for rel, st := range readStatusFile(project.Dir) {
+			if st.State != StateQueued && st.State != StateBuilding {
+				continue
+			}
+			key := previewPendingKey(project.ID, rel)
+			b.mu.Lock()
+			pending := b.pending[key]
+			b.mu.Unlock()
+			if !pending {
+				b.Enqueue(project.ID, rel)
+			}
+		}
+	}
+}
+
+// QueueDepth reports preview jobs buffered or currently owned by the worker.
+func (b *Builder) QueueDepth() int {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.pending)
 }
 
 func (b *Builder) runJob(job previewJob) {

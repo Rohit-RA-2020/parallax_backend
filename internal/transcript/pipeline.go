@@ -39,6 +39,7 @@ type Indexer struct {
 	stop    chan struct{}
 	workers sync.WaitGroup
 	run     bool
+	pending map[string]bool
 }
 
 type indexJob struct {
@@ -96,8 +97,9 @@ func (x *Indexer) Start() {
 			}
 		}()
 	}
-	x.workers.Add(1 + n)
+	x.workers.Add(2 + n)
 	go x.loop()
+	go x.recoveryLoop()
 	for i := 0; i < n; i++ {
 		go x.lightLoop()
 	}
@@ -130,15 +132,18 @@ func (x *Indexer) Enqueue(projectID, rel string) {
 		return
 	}
 	x.Start()
+	x.mu.Lock()
+	alreadyPending := x.pending[indexPendingKey(projectID, rel)]
+	x.mu.Unlock()
+	if alreadyPending {
+		return
+	}
 	x.Mark(projectID, rel, StateQueued, "")
 	dest := x.queue
 	if HasImage(rel) {
 		dest = x.light
 	}
-	select {
-	case dest <- indexJob{projectID: projectID, rel: rel}:
-	case <-x.stop:
-	}
+	x.tryEnqueue(dest, indexJob{projectID: projectID, rel: rel})
 }
 
 // EnqueueDescribe schedules visual scene captions even when a transcript exists.
@@ -151,11 +156,43 @@ func (x *Indexer) EnqueueDescribe(projectID, rel string) {
 		return
 	}
 	x.Start()
-	x.Mark(projectID, rel, StateQueued, "")
-	select {
-	case x.queue <- indexJob{projectID: projectID, rel: rel, describe: true}:
-	case <-x.stop:
+	x.mu.Lock()
+	alreadyPending := x.pending[indexPendingKey(projectID, rel)]
+	x.mu.Unlock()
+	if alreadyPending {
+		return
 	}
+	x.Mark(projectID, rel, StateQueued, "")
+	x.tryEnqueue(x.queue, indexJob{projectID: projectID, rel: rel, describe: true})
+}
+
+func indexPendingKey(projectID, rel string) string { return projectID + "\n" + rel }
+
+func (x *Indexer) tryEnqueue(dest chan indexJob, job indexJob) {
+	key := indexPendingKey(job.projectID, job.rel)
+	x.mu.Lock()
+	if x.pending == nil {
+		x.pending = map[string]bool{}
+	}
+	if x.pending[key] {
+		x.mu.Unlock()
+		return
+	}
+	x.pending[key] = true
+	x.mu.Unlock()
+	select {
+	case dest <- job:
+	case <-x.stop:
+		x.clearPending(job)
+	default:
+		x.clearPending(job)
+	}
+}
+
+func (x *Indexer) clearPending(job indexJob) {
+	x.mu.Lock()
+	delete(x.pending, indexPendingKey(job.projectID, job.rel))
+	x.mu.Unlock()
 }
 
 func (x *Indexer) loop() {
@@ -166,6 +203,7 @@ func (x *Indexer) loop() {
 			return
 		case job := <-x.queue:
 			x.runJob(job)
+			x.clearPending(job)
 		}
 	}
 }
@@ -178,8 +216,55 @@ func (x *Indexer) lightLoop() {
 			return
 		case job := <-x.light:
 			x.runJob(job)
+			x.clearPending(job)
 		}
 	}
+}
+
+func (x *Indexer) recoveryLoop() {
+	defer x.workers.Done()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	x.recoverPending()
+	for {
+		select {
+		case <-x.stop:
+			return
+		case <-ticker.C:
+			x.recoverPending()
+		}
+	}
+}
+
+func (x *Indexer) recoverPending() {
+	if x == nil || x.Projects == nil {
+		return
+	}
+	for _, project := range x.Projects.List() {
+		for rel, st := range readStatusFile(project.Dir) {
+			if isTerminalState(st.State) || st.State == "" {
+				continue
+			}
+			key := indexPendingKey(project.ID, rel)
+			x.mu.Lock()
+			pending := x.pending[key]
+			x.mu.Unlock()
+			if pending {
+				continue
+			}
+			x.Enqueue(project.ID, rel)
+		}
+	}
+}
+
+// QueueDepth reports jobs buffered or currently owned by workers.
+func (x *Indexer) QueueDepth() int {
+	if x == nil {
+		return 0
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return len(x.pending)
 }
 
 func (x *Indexer) runJob(job indexJob) {

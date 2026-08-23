@@ -179,6 +179,8 @@ QDRANT_URL=http://127.0.0.1:6333
 
 ## Run
 
+The backend requires Go 1.25.8 or newer.
+
 ```bash
 cd parallax_backend
 cp .env.example .env   # then put a key in LLM_API_KEY or XAI_API_KEY
@@ -188,6 +190,20 @@ go run ./cmd/server
 Create projects from the frontend and upload media there. Each project gets an
 isolated directory under `./workspace/projects/<project-id>`; Director tools are
 scoped to that directory for the whole session.
+
+Large media uses the tus resumable-upload protocol at `/v1/uploads/`. The web
+client uploads 32 MiB chunks, retries interrupted transfers, and resumes the
+same file from its last server-confirmed offset. Completed bytes are promoted
+into the project's content-addressed object store and hard-linked into `media/`
+before indexing and preview generation run in the background.
+
+```bash
+PARALLAX_MAX_UPLOAD_BYTES=68719476736
+PARALLAX_UPLOAD_EXPIRY_HOURS=24
+PARALLAX_UPLOAD_STATUS_RETENTION_HOURS=168
+PARALLAX_MAX_ACTIVE_UPLOADS=8
+PARALLAX_MAX_PROJECT_UPLOADS=4
+```
 
 ## Project and media API
 
@@ -199,7 +215,8 @@ scoped to that directory for the whole session.
 | `DELETE` | `/v1/projects/{id}` | Permanently delete a project, its media, chats, transcripts, and embeddings |
 | `GET` | `/v1/projects/{id}/media` | List uploaded and generated media |
 | `GET` | `/v1/projects/{id}/media/search?q=` | Semantic search over stills, video shots, and speech |
-| `POST` | `/v1/projects/{id}/media` | Upload one or more multipart `files` |
+| tus | `/v1/uploads/` | Create, resume, inspect, or cancel a resumable upload |
+| `GET` | `/v1/upload-status/{uploadId}` | Read finalization state and completed media |
 | `POST` | `/v1/projects/{id}/export` | Render a downloadable file (`mp4`, `mov`, `webm`, `gif`, `mp3`) |
 | `GET` | `/v1/projects/{id}/files/{path...}` | Stream a project file with range support |
 | `DELETE` | `/v1/projects/{id}/files/{path...}` | Remove a media file from the project |

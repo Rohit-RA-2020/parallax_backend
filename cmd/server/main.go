@@ -126,6 +126,21 @@ func main() {
 
 	previews := &preview.Builder{Projects: projectStore, Bins: bins, Logger: log}
 	previews.Start()
+	uploads, err := httpapi.NewUploadManager(httpapi.UploadManagerConfig{
+		Workspace: cfg.WorkspaceDir, Projects: projectStore, Bins: bins, Logger: log,
+		MaxSize: cfg.MaxUploadBytes, Expiry: cfg.UploadExpiry,
+		StatusRetention: cfg.UploadStatusRetention,
+		MaxActive:       cfg.MaxActiveUploads, MaxPerProject: cfg.MaxProjectUploads,
+		OnReady: func(projectID string, media projects.Media, uploadMs int64) {
+			indexer.NoteUpload(projectID, media.Path, uploadMs)
+			indexer.Enqueue(projectID, media.Path)
+			previews.Enqueue(projectID, media.Path)
+		},
+	})
+	if err != nil {
+		log.Error("uploads", "err", err)
+		os.Exit(1)
+	}
 
 	srv := &httpapi.Server{
 		Addr:                    cfg.Addr,
@@ -159,6 +174,7 @@ func main() {
 		ElevenTTSOutputFormat:   cfg.ElevenLabsTTSOutputFormat,
 		ElevenSFXOutputFormat:   cfg.ElevenLabsSFXOutputFormat,
 		ElevenLimiter:           tools.NewLimiter(cfg.ElevenLabsMaxConcurrency),
+		Uploads:                 uploads,
 		NewLLM: func(l config.LLM) llm.ChatProvider {
 			return llm.NewCompatClient(l.BaseURL, l.APIKey, l.Model)
 		},
@@ -168,6 +184,8 @@ func main() {
 		Addr:              cfg.Addr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    1 << 20,
 		// ReadTimeout and WriteTimeout stay unset so multi-GB uploads and
 		// long transcodes are not killed mid-stream.
 	}
@@ -189,6 +207,9 @@ func main() {
 	}()
 
 	<-ctx.Done()
+	if uploads != nil {
+		uploads.Close()
+	}
 	if indexer != nil {
 		indexer.Close()
 	}

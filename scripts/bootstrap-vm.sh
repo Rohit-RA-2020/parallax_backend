@@ -126,7 +126,9 @@ docker_bin() {
 
 go_new_enough() {
   have go || return 1
-  go version 2>/dev/null | grep -Eq 'go1\.(2[2-9]|[3-9][0-9])'
+  local current
+  current="$(go env GOVERSION 2>/dev/null | sed 's/^go//')"
+  [[ -n "$current" && "$(printf '%s\n%s\n' 1.25.8 "$current" | sort -V | head -1)" == "1.25.8" ]]
 }
 
 ffmpeg_has_nvenc() {
@@ -223,7 +225,7 @@ print_checks() {
   if go_new_enough; then
     ok "$(go version)"
   else
-    fail "Go 1.22+ is required"
+    fail "Go 1.25.8+ is required"
     issues=$((issues + 1))
   fi
 
@@ -325,7 +327,7 @@ if ! go_new_enough; then
   if [[ -z "${GO_VERSION:-}" ]]; then
     GO_VERSION="$(curl -fsSL https://go.dev/VERSION?m=text | head -1 | sed 's/^go//')" || true
   fi
-  GO_VERSION="${GO_VERSION:-1.22.12}"
+  GO_VERSION="${GO_VERSION:-1.25.8}"
   tmp="$(mktemp -d)"
   curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${goarch}.tar.gz" -o "$tmp/go.tgz"
   as_root rm -rf /usr/local/go
@@ -335,7 +337,7 @@ if ! go_new_enough; then
 export PATH="/usr/local/go/bin:$PATH"
 EOF
   export PATH="/usr/local/go/bin:$PATH"
-  go_new_enough || die "Go install did not produce 1.22+"
+  go_new_enough || die "Go install did not produce 1.25.8+"
   ok "$(go version)"
 else
   ok "$(go version) already present"

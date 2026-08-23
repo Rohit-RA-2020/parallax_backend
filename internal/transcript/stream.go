@@ -143,12 +143,15 @@ func (l *liveEmbedder) flush() {
 	batch := append([]int(nil), l.ready...)
 	l.ready = l.ready[:0]
 	segs := append([]Segment(nil), l.doc.Segments...)
+	doc := *l.doc
+	doc.Segments = segs
+	doc.Words = nil
 	l.mu.Unlock()
 	if len(batch) == 0 {
 		return
 	}
 	started := time.Now()
-	if err := l.x.upsertSegmentIndexes(l.ctx, l.projectID, l.doc, segs, batch, !l.cleared); err != nil {
+	if err := l.x.upsertSegmentIndexes(l.ctx, l.projectID, &doc, segs, batch, !l.cleared); err != nil {
 		l.mu.Lock()
 		if l.err == nil {
 			l.err = err

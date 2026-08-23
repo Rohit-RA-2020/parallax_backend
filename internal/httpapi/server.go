@@ -58,8 +58,7 @@ type Server struct {
 	ElevenTTSOutputFormat   string
 	ElevenSFXOutputFormat   string
 	ElevenLimiter           *tools.Limiter
-	// MaxUploadBytes caps one media request. Zero uses DefaultMaxUploadBytes (16 GiB).
-	MaxUploadBytes int64
+	Uploads                 *UploadManager
 }
 
 func (s *Server) indexMedia(projectID, rel string) {
@@ -119,6 +118,11 @@ func (s *Server) log() *slog.Logger {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.handleHealth)
+	if s.Uploads != nil {
+		mux.Handle("/v1/uploads", http.StripPrefix("/v1/uploads", s.Uploads.Handler()))
+		mux.Handle("/v1/uploads/", http.StripPrefix("/v1/uploads", s.Uploads.Handler()))
+		mux.HandleFunc("GET /v1/upload-status/{id}", s.handleUploadStatus)
+	}
 	mux.HandleFunc("GET /v1/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /v1/settings", s.handlePutSettings)
 	mux.HandleFunc("POST /v1/agent/chat", s.handleChat)
@@ -131,7 +135,6 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("DELETE /v1/projects/{id}", s.handleDeleteProject)
 		mux.HandleFunc("GET /v1/projects/{id}/media/search", s.handleSearchMedia)
 		mux.HandleFunc("GET /v1/projects/{id}/media", s.handleListMedia)
-		mux.HandleFunc("POST /v1/projects/{id}/media", s.handleUploadMedia)
 		mux.HandleFunc("POST /v1/projects/{id}/media/describe", s.handleDescribeMedia)
 		mux.HandleFunc("POST /v1/projects/{id}/export", s.handleExport)
 		mux.HandleFunc("GET /v1/projects/{id}/files/{path...}", s.handleProjectFile)
@@ -158,12 +161,22 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	llmCfg := s.Settings.Get()
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"ok":        true,
 		"model":     llmCfg.Model,
 		"base_url":  llmCfg.BaseURL,
 		"workspace": s.Workspace,
-	})
+	}
+	if s.Uploads != nil {
+		body["uploads"] = s.Uploads.Stats()
+	}
+	if s.Indexer != nil {
+		body["index_queue_depth"] = s.Indexer.QueueDepth()
+	}
+	if s.Previews != nil {
+		body["preview_queue_depth"] = s.Previews.QueueDepth()
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
@@ -509,6 +522,10 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/uploads") {
+			next.ServeHTTP(w, r)
+			return
+		}
 		h := w.Header()
 		h.Set("Access-Control-Allow-Origin", "*")
 		h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Expected-Revision, X-Change-Summary, Range")

@@ -2,6 +2,7 @@ package projects
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -42,9 +43,10 @@ type Media struct {
 }
 
 type Store struct {
-	mu   sync.RWMutex
-	root string
-	data map[string]Project
+	mu       sync.RWMutex
+	uploadMu sync.Mutex
+	root     string
+	data     map[string]Project
 }
 
 func NewStore(root string) (*Store, error) {
@@ -181,6 +183,107 @@ func (s *Store) SaveUpload(id, originalName string, src io.Reader) (Media, error
 		return Media{}, err
 	}
 	return mediaFromFile(p.Dir, dst)
+}
+
+// FinalizeUpload promotes a completed temporary upload into the project's
+// content-addressed object store and links it into media/. The upload mutex
+// makes filename allocation, object-index updates, and the history commit one
+// atomic project-store operation from the point of view of concurrent uploads.
+func (s *Store) FinalizeUpload(id, originalName, source string) (Media, error) {
+	s.uploadMu.Lock()
+	defer s.uploadMu.Unlock()
+
+	p, err := s.Get(id)
+	if err != nil {
+		return Media{}, err
+	}
+	name := safeName(originalName)
+	if name == "" {
+		return Media{}, errors.New("uploaded file needs a valid filename")
+	}
+	if !isMediaName(name) {
+		return Media{}, fmt.Errorf("unsupported media type %q", filepath.Ext(name))
+	}
+	info, err := os.Stat(source)
+	if err != nil {
+		return Media{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return Media{}, errors.New("completed upload is not a regular file")
+	}
+
+	f, err := os.Open(source)
+	if err != nil {
+		return Media{}, err
+	}
+	h := sha256.New()
+	err = copyStream(h, f)
+	closeErr := f.Close()
+	if err != nil {
+		return Media{}, err
+	}
+	if closeErr != nil {
+		return Media{}, closeErr
+	}
+	hash := hex.EncodeToString(h.Sum(nil))
+	objectDir := objectsDir(p)
+	if err := os.MkdirAll(objectDir, 0o700); err != nil {
+		return Media{}, err
+	}
+	objectPath := filepath.Join(objectDir, hash)
+	if _, err := os.Stat(objectPath); os.IsNotExist(err) {
+		if err := os.Link(source, objectPath); err != nil {
+			if err := copyFileAtomic(source, objectPath, 0o600); err != nil {
+				return Media{}, err
+			}
+		}
+	} else if err != nil {
+		return Media{}, err
+	}
+	_ = os.Chmod(objectPath, 0o600)
+
+	mediaDir := filepath.Join(p.Dir, "media")
+	if err := os.MkdirAll(mediaDir, 0o755); err != nil {
+		return Media{}, err
+	}
+	dst := availablePath(mediaDir, name)
+	if err := os.Link(objectPath, dst); err != nil {
+		if err := copyFileAtomic(objectPath, dst, 0o644); err != nil {
+			return Media{}, err
+		}
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.Remove(dst)
+		}
+	}()
+
+	media, err := mediaFromFile(p.Dir, dst)
+	if err != nil {
+		return Media{}, err
+	}
+	dstInfo, err := os.Stat(dst)
+	if err != nil {
+		return Media{}, err
+	}
+	index := readObjectIndex(p)
+	index[media.Path] = objectIndexEntry{Size: dstInfo.Size(), Mtime: dstInfo.ModTime().UnixNano(), Hash: hash}
+	if err := writeObjectIndex(p, index); err != nil {
+		return Media{}, err
+	}
+	if err := s.Touch(id); err != nil {
+		return Media{}, err
+	}
+	history, err := s.History(id)
+	if err != nil {
+		return Media{}, err
+	}
+	if _, err := s.CommitMediaState(id, history.Head, CommitMeta{Actor: "human", Summary: "Uploaded media"}); err != nil {
+		return Media{}, err
+	}
+	committed = true
+	return media, nil
 }
 
 func (s *Store) SaveChatImage(id, originalName, mime string, data []byte) (llm.ImageRef, error) {
@@ -480,6 +583,12 @@ func contentType(ext string) string {
 func KindForExt(ext string) string {
 	return kindForExt(ext)
 }
+
+// SanitizeMediaName returns the filesystem-safe form used for uploaded media.
+func SanitizeMediaName(name string) string { return safeName(name) }
+
+// IsSupportedMediaName reports whether name has an accepted media extension.
+func IsSupportedMediaName(name string) bool { return isMediaName(name) }
 
 func kindForExt(ext string) string {
 	switch ext {

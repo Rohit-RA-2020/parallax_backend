@@ -57,6 +57,9 @@ func freeBytes(path string) (int64, error) {
 	return int64(st.Bavail) * int64(st.Bsize), nil
 }
 
+// FreeBytes returns the available bytes on path's filesystem.
+func FreeBytes(path string) (int64, error) { return freeBytes(path) }
+
 func formatByteSize(n int64) string {
 	if n < 0 {
 		n = 0

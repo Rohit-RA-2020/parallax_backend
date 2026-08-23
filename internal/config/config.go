@@ -68,6 +68,11 @@ type Config struct {
 	ElevenLabsMaxConcurrency   int
 	ElevenLabsMaxResponseBytes int64
 	MaxIters                   int
+	MaxUploadBytes             int64
+	UploadExpiry               time.Duration
+	UploadStatusRetention      time.Duration
+	MaxActiveUploads           int
+	MaxProjectUploads          int
 	FFmpegBin                  string
 	FFprobeBin                 string
 	FFmpegHWAccel              string
@@ -140,6 +145,11 @@ func Load() (Config, error) {
 		ElevenLabsMaxConcurrency:   envInt("ELEVENLABS_MAX_CONCURRENCY", 4),
 		ElevenLabsMaxResponseBytes: int64(envInt("ELEVENLABS_MAX_RESPONSE_BYTES", 256<<20)),
 		MaxIters:                   envInt("PARALLAX_MAX_ITERS", DefaultMaxIters),
+		MaxUploadBytes:             envInt64("PARALLAX_MAX_UPLOAD_BYTES", 64<<30),
+		UploadExpiry:               time.Duration(envInt("PARALLAX_UPLOAD_EXPIRY_HOURS", 24)) * time.Hour,
+		UploadStatusRetention:      time.Duration(envInt("PARALLAX_UPLOAD_STATUS_RETENTION_HOURS", 168)) * time.Hour,
+		MaxActiveUploads:           envInt("PARALLAX_MAX_ACTIVE_UPLOADS", 8),
+		MaxProjectUploads:          envInt("PARALLAX_MAX_PROJECT_UPLOADS", 4),
 		FFmpegBin:                  envOr("FFMPEG_BIN", "ffmpeg"),
 		FFprobeBin:                 envOr("FFPROBE_BIN", "ffprobe"),
 		FFmpegHWAccel:              strings.ToLower(envOr("FFMPEG_HWACCEL", "auto")),
@@ -161,6 +171,21 @@ func Load() (Config, error) {
 
 	if cfg.MaxIters < 1 {
 		cfg.MaxIters = DefaultMaxIters
+	}
+	if cfg.MaxUploadBytes < 1<<20 {
+		cfg.MaxUploadBytes = 64 << 30
+	}
+	if cfg.UploadExpiry < time.Hour {
+		cfg.UploadExpiry = 24 * time.Hour
+	}
+	if cfg.UploadStatusRetention < time.Hour {
+		cfg.UploadStatusRetention = 7 * 24 * time.Hour
+	}
+	if cfg.MaxActiveUploads < 1 {
+		cfg.MaxActiveUploads = 8
+	}
+	if cfg.MaxProjectUploads < 1 {
+		cfg.MaxProjectUploads = 4
 	}
 	if cfg.ElevenLabsRequestTimeout < time.Second {
 		cfg.ElevenLabsRequestTimeout = 15 * time.Minute
@@ -539,6 +564,18 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+func envInt64(key string, fallback int64) int64 {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
 		return fallback
 	}

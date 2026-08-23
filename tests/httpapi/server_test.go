@@ -3,17 +3,19 @@ package httpapi_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"parallax/internal/agent"
 	"parallax/internal/config"
@@ -190,7 +192,7 @@ func testServer(t *testing.T, p llm.ChatProvider) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Server{
+	s := &Server{
 		Settings: config.NewStore(filepath.Join(dir, "settings.json"), []config.LLM{{
 			ID:      "default",
 			BaseURL: config.DefaultBaseURL,
@@ -204,6 +206,82 @@ func testServer(t *testing.T, p llm.ChatProvider) *Server {
 		Workspace: dir,
 		NewLLM:    func(config.LLM) llm.ChatProvider { return p },
 	}
+	uploads, err := NewUploadManager(UploadManagerConfig{
+		Workspace: dir, Projects: projectStore, MaxSize: 64 << 30,
+		Validate: func(context.Context, string, string) error { return nil },
+		OnReady: func(projectID string, media projects.Media, uploadMs int64) {
+			if s.Indexer != nil {
+				s.Indexer.NoteUpload(projectID, media.Path, uploadMs)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Uploads = uploads
+	t.Cleanup(uploads.Close)
+	return s
+}
+
+func tusUpload(t *testing.T, baseURL, projectID, name string, body []byte) string {
+	t.Helper()
+	meta := func(value string) string { return base64.StdEncoding.EncodeToString([]byte(value)) }
+	req, _ := http.NewRequest(http.MethodPost, baseURL+"/v1/uploads/", nil)
+	req.Header.Set("Tus-Resumable", "1.0.0")
+	req.Header.Set("Upload-Length", strconv.Itoa(len(body)))
+	req.Header.Set("Upload-Metadata", "project_id "+meta(projectID)+",filename "+meta(name)+",filetype "+meta("application/octet-stream"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create upload: %s %s", resp.Status, raw)
+	}
+	location := resp.Header.Get("Location")
+	if strings.HasPrefix(location, "/") {
+		location = baseURL + location
+	}
+	patch, _ := http.NewRequest(http.MethodPatch, location, bytes.NewReader(body))
+	patch.Header.Set("Tus-Resumable", "1.0.0")
+	patch.Header.Set("Upload-Offset", "0")
+	patch.Header.Set("Content-Type", "application/offset+octet-stream")
+	resp, err = http.DefaultClient.Do(patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("patch upload: %s %s", resp.Status, raw)
+	}
+	id := strings.TrimSuffix(location, "/")
+	id = id[strings.LastIndex(id, "/")+1:]
+	for i := 0; i < 200; i++ {
+		status, err := http.Get(baseURL + "/v1/upload-status/" + id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result struct {
+			State string `json:"state"`
+			Error string `json:"error"`
+			Media *struct {
+				ContentURL string `json:"content_url"`
+			} `json:"media"`
+		}
+		_ = json.NewDecoder(status.Body).Decode(&result)
+		status.Body.Close()
+		if result.State == "ready" && result.Media != nil {
+			return result.Media.ContentURL
+		}
+		if result.State == "failed" {
+			t.Fatalf("finalize upload: %s", result.Error)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("upload did not finalize")
+	return ""
 }
 
 func TestSearchMediaReturnsIndexHits(t *testing.T) {
@@ -297,21 +375,7 @@ func TestListMediaIncludesTranscriptStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var body bytes.Buffer
-	mw := multipart.NewWriter(&body)
-	part, err := mw.CreateFormFile("files", "talk.mp4")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _ = part.Write([]byte("video-bytes"))
-	_ = mw.Close()
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/projects/"+created.ID+"/media", &body)
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
+	tusUpload(t, ts.URL, created.ID, "talk.mp4", []byte("video-bytes"))
 	s.Indexer.Mark(created.ID, "media/talk.mp4", transcript.StateTranscribing, "")
 
 	resp, err = http.Get(ts.URL + "/v1/projects/" + created.ID + "/media")
@@ -433,7 +497,13 @@ func TestDeleteProjectRemovesWorkspaceAndIndex(t *testing.T) {
 
 func TestUploadRejectsOversizeFile(t *testing.T) {
 	s := testServer(t, fakeProvider{})
-	s.MaxUploadBytes = 64
+	s.Uploads.Close()
+	uploads, err := NewUploadManager(UploadManagerConfig{Workspace: s.Workspace, Projects: s.Projects, MaxSize: 64, Validate: func(context.Context, string, string) error { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Uploads = uploads
+	defer uploads.Close()
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 
@@ -449,18 +519,11 @@ func TestUploadRejectsOversizeFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var body bytes.Buffer
-	mw := multipart.NewWriter(&body)
-	part, err := mw.CreateFormFile("files", "huge.mp4")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := part.Write(bytes.Repeat([]byte("x"), 200)); err != nil {
-		t.Fatal(err)
-	}
-	_ = mw.Close()
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/projects/"+created.ID+"/media", &body)
-	req.Header.Set("Content-Type", mw.FormDataContentType())
+	meta := base64.StdEncoding.EncodeToString
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/uploads/", nil)
+	req.Header.Set("Tus-Resumable", "1.0.0")
+	req.Header.Set("Upload-Length", "200")
+	req.Header.Set("Upload-Metadata", "project_id "+meta([]byte(created.ID))+",filename "+meta([]byte("huge.mp4")))
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -492,37 +555,8 @@ func TestProjectUploadAndServe(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var body bytes.Buffer
-	mw := multipart.NewWriter(&body)
-	part, err := mw.CreateFormFile("files", "clip.mp4")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _ = part.Write([]byte("video-bytes"))
-	_ = mw.Close()
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/projects/"+created.ID+"/media", &body)
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		raw, _ := io.ReadAll(resp.Body)
-		t.Fatalf("%s %s", resp.Status, raw)
-	}
-	var upload struct {
-		Media []struct {
-			ContentURL string `json:"content_url"`
-		} `json:"media"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&upload); err != nil {
-		t.Fatal(err)
-	}
-	if len(upload.Media) != 1 {
-		t.Fatalf("upload=%+v", upload)
-	}
-	resp, err = http.Get(ts.URL + upload.Media[0].ContentURL)
+	contentURL := tusUpload(t, ts.URL, created.ID, "clip.mp4", []byte("video-bytes"))
+	resp, err = http.Get(ts.URL + contentURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -532,7 +566,7 @@ func TestProjectUploadAndServe(t *testing.T) {
 		t.Fatalf("served=%q", served)
 	}
 
-	req, _ = http.NewRequest(http.MethodDelete, ts.URL+strings.Split(upload.Media[0].ContentURL, "?")[0], nil)
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+strings.Split(contentURL, "?")[0], nil)
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -555,6 +589,256 @@ func TestProjectUploadAndServe(t *testing.T) {
 	}
 	if len(listed.Media) != 0 {
 		t.Fatalf("listed=%+v", listed)
+	}
+}
+
+func TestTusUploadResumesAndUsesSingleStoredObject(t *testing.T) {
+	s := testServer(t, fakeProvider{})
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	project, err := s.Projects.Create("Resume")
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := func(value string) string { return base64.StdEncoding.EncodeToString([]byte(value)) }
+	create, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/uploads/", nil)
+	create.Header.Set("Tus-Resumable", "1.0.0")
+	create.Header.Set("Upload-Length", "11")
+	create.Header.Set("Upload-Metadata", "project_id "+meta(project.ID)+",filename "+meta("resume.mp4"))
+	resp, err := http.DefaultClient.Do(create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatal(resp.Status)
+	}
+	location := resp.Header.Get("Location")
+	if strings.HasPrefix(location, "/") {
+		location = ts.URL + location
+	}
+	patch := func(offset string, body string) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPatch, location, strings.NewReader(body))
+		req.Header.Set("Tus-Resumable", "1.0.0")
+		req.Header.Set("Upload-Offset", offset)
+		req.Header.Set("Content-Type", "application/offset+octet-stream")
+		got, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	resp = patch("0", "video")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent || resp.Header.Get("Upload-Offset") != "5" {
+		t.Fatalf("first patch=%s offset=%s", resp.Status, resp.Header.Get("Upload-Offset"))
+	}
+	head, _ := http.NewRequest(http.MethodHead, location, nil)
+	head.Header.Set("Tus-Resumable", "1.0.0")
+	resp, err = http.DefaultClient.Do(head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.Header.Get("Upload-Offset") != "5" {
+		t.Fatalf("resume offset=%s", resp.Header.Get("Upload-Offset"))
+	}
+	resp = patch("0", "bad")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("wrong offset status=%s", resp.Status)
+	}
+	resp = patch("5", "-bytes")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("final patch=%s", resp.Status)
+	}
+	id := location[strings.LastIndex(location, "/")+1:]
+	for i := 0; i < 200; i++ {
+		status, _ := http.Get(ts.URL + "/v1/upload-status/" + id)
+		var result struct {
+			State string `json:"state"`
+		}
+		_ = json.NewDecoder(status.Body).Decode(&result)
+		status.Body.Close()
+		if result.State == "ready" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mediaInfo, err := os.Stat(filepath.Join(project.Dir, "media", "resume.mp4"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects, err := os.ReadDir(filepath.Join(project.Dir, ".parallax", "objects"))
+	if err != nil || len(objects) != 1 {
+		t.Fatalf("objects=%v err=%v", objects, err)
+	}
+	objectInfo, err := os.Stat(filepath.Join(project.Dir, ".parallax", "objects", objects[0].Name()))
+	if err != nil || !os.SameFile(mediaInfo, objectInfo) {
+		t.Fatalf("media and history object should be hard links: %v", err)
+	}
+
+	legacy, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/projects/"+project.ID+"/media", strings.NewReader("legacy"))
+	resp, err = http.DefaultClient.Do(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("legacy endpoint=%s", resp.Status)
+	}
+}
+
+func TestTusOptionsExposeProtocolHeaders(t *testing.T) {
+	s := testServer(t, fakeProvider{})
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	req, _ := http.NewRequest(http.MethodOptions, ts.URL+"/v1/uploads/", nil)
+	req.Header.Set("Origin", "http://localhost:5173")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if (resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK) || resp.Header.Get("Tus-Version") == "" {
+		t.Fatalf("options=%s tus-version=%q", resp.Status, resp.Header.Get("Tus-Version"))
+	}
+	if !strings.Contains(resp.Header.Get("Access-Control-Allow-Headers"), "Upload-Offset") {
+		t.Fatalf("allow headers=%q", resp.Header.Get("Access-Control-Allow-Headers"))
+	}
+}
+
+func TestTusUploadCanBeCancelled(t *testing.T) {
+	s := testServer(t, fakeProvider{})
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	project, err := s.Projects.Create("Cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := func(value string) string { return base64.StdEncoding.EncodeToString([]byte(value)) }
+	create, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/uploads/", nil)
+	create.Header.Set("Tus-Resumable", "1.0.0")
+	create.Header.Set("Upload-Length", "100")
+	create.Header.Set("Upload-Metadata", "project_id "+meta(project.ID)+",filename "+meta("cancel.mp4"))
+	resp, err := http.DefaultClient.Do(create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	location := resp.Header.Get("Location")
+	if strings.HasPrefix(location, "/") {
+		location = ts.URL + location
+	}
+	cancel, _ := http.NewRequest(http.MethodDelete, location, nil)
+	cancel.Header.Set("Tus-Resumable", "1.0.0")
+	resp, err = http.DefaultClient.Do(cancel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("cancel=%s", resp.Status)
+	}
+	id := location[strings.LastIndex(location, "/")+1:]
+	for i := 0; i < 100; i++ {
+		status, _ := http.Get(ts.URL + "/v1/upload-status/" + id)
+		var result struct {
+			State string `json:"state"`
+		}
+		_ = json.NewDecoder(status.Body).Decode(&result)
+		status.Body.Close()
+		if result.State == "expired" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("cancelled upload did not become expired")
+}
+
+func TestTusUploadEnforcesActiveLimit(t *testing.T) {
+	s := testServer(t, fakeProvider{})
+	s.Uploads.Close()
+	uploads, err := NewUploadManager(UploadManagerConfig{Workspace: s.Workspace, Projects: s.Projects, MaxSize: 1024, MaxActive: 1, MaxPerProject: 1, Validate: func(context.Context, string, string) error { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Uploads = uploads
+	defer uploads.Close()
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	project, _ := s.Projects.Create("Limits")
+	meta := func(value string) string { return base64.StdEncoding.EncodeToString([]byte(value)) }
+	create := func(name string) *http.Response {
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/uploads/", nil)
+		req.Header.Set("Tus-Resumable", "1.0.0")
+		req.Header.Set("Upload-Length", "100")
+		req.Header.Set("Upload-Metadata", "project_id "+meta(project.ID)+",filename "+meta(name))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	first := create("one.mp4")
+	first.Body.Close()
+	if first.StatusCode != http.StatusCreated {
+		t.Fatal(first.Status)
+	}
+	second := create("two.mp4")
+	second.Body.Close()
+	if second.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("second create=%s", second.Status)
+	}
+}
+
+func TestTusUploadOffsetSurvivesServerRestart(t *testing.T) {
+	s := testServer(t, fakeProvider{})
+	project, _ := s.Projects.Create("Restart")
+	ts := httptest.NewServer(s.Handler())
+	meta := func(value string) string { return base64.StdEncoding.EncodeToString([]byte(value)) }
+	create, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/uploads/", nil)
+	create.Header.Set("Tus-Resumable", "1.0.0")
+	create.Header.Set("Upload-Length", "10")
+	create.Header.Set("Upload-Metadata", "project_id "+meta(project.ID)+",filename "+meta("restart.mp4"))
+	resp, err := http.DefaultClient.Do(create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	path := resp.Header.Get("Location")
+	path = path[strings.Index(path, "/v1/uploads/"):]
+	patch, _ := http.NewRequest(http.MethodPatch, ts.URL+path, strings.NewReader("12345"))
+	patch.Header.Set("Tus-Resumable", "1.0.0")
+	patch.Header.Set("Upload-Offset", "0")
+	patch.Header.Set("Content-Type", "application/offset+octet-stream")
+	resp, err = http.DefaultClient.Do(patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	ts.Close()
+	s.Uploads.Close()
+
+	uploads, err := NewUploadManager(UploadManagerConfig{Workspace: s.Workspace, Projects: s.Projects, MaxSize: 1024, Validate: func(context.Context, string, string) error { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Uploads = uploads
+	defer uploads.Close()
+	ts = httptest.NewServer(s.Handler())
+	defer ts.Close()
+	head, _ := http.NewRequest(http.MethodHead, ts.URL+path, nil)
+	head.Header.Set("Tus-Resumable", "1.0.0")
+	resp, err = http.DefaultClient.Do(head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Upload-Offset") != "5" {
+		t.Fatalf("restart head=%s offset=%s", resp.Status, resp.Header.Get("Upload-Offset"))
 	}
 }
 
