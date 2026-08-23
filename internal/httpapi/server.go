@@ -58,6 +58,9 @@ type Server struct {
 	ElevenTTSOutputFormat   string
 	ElevenSFXOutputFormat   string
 	ElevenLimiter           *tools.Limiter
+	YouTubeTimeout          time.Duration
+	YouTubeMaxBytes         int64
+	YouTubeYTDLPBin         string
 	Uploads                 *UploadManager
 }
 
@@ -291,6 +294,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			OnApplied:  func(rel string) { s.indexMedia(projectID, rel) },
 		})
 		tools.RegisterWeb(toolRegistry, tools.WebEnv{APIKey: s.ExaAPIKey, BaseURL: s.ExaBaseURL})
+		tools.RegisterYouTube(toolRegistry, tools.YouTubeEnv{
+			Workspace: project.Dir, Bins: s.Bins, Timeout: s.YouTubeTimeout, MaxBytes: s.YouTubeMaxBytes, YTDLPBin: s.YouTubeYTDLPBin,
+			OnMutation: timelineTx.MarkMediaMutation,
+			OnApplied:  func(rel string) { s.indexMedia(projectID, rel) },
+		})
 		tools.RegisterImage(toolRegistry, tools.ImageEnv{
 			Workspace:  project.Dir,
 			APIKey:     s.GeminiAPIKey,
@@ -459,6 +467,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 }
 
 func appendTraceEvent(events []projects.ChatTraceEvent, ev agent.Event) []projects.ChatTraceEvent {
+	if ev.Type == agent.EventToolProgress {
+		return events
+	}
 	if ev.Type != agent.EventThinking {
 		return append(events, projects.ChatTraceEvent{Type: string(ev.Type), Data: append([]byte(nil), ev.Data...)})
 	}

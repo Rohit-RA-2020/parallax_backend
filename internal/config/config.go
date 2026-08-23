@@ -73,6 +73,9 @@ type Config struct {
 	UploadStatusRetention      time.Duration
 	MaxActiveUploads           int
 	MaxProjectUploads          int
+	YouTubeDownloadTimeout     time.Duration
+	YouTubeMaxDownloadBytes    int64
+	YouTubeYTDLPBin            string
 	FFmpegBin                  string
 	FFprobeBin                 string
 	FFmpegHWAccel              string
@@ -150,6 +153,9 @@ func Load() (Config, error) {
 		UploadStatusRetention:      time.Duration(envInt("PARALLAX_UPLOAD_STATUS_RETENTION_HOURS", 168)) * time.Hour,
 		MaxActiveUploads:           envInt("PARALLAX_MAX_ACTIVE_UPLOADS", 8),
 		MaxProjectUploads:          envInt("PARALLAX_MAX_PROJECT_UPLOADS", 4),
+		YouTubeDownloadTimeout:     time.Duration(envInt("YOUTUBE_DOWNLOAD_TIMEOUT_SECONDS", 1800)) * time.Second,
+		YouTubeMaxDownloadBytes:    envInt64("YOUTUBE_MAX_DOWNLOAD_BYTES", 8<<30),
+		YouTubeYTDLPBin:            resolveYouTubeDownloader(cwd),
 		FFmpegBin:                  envOr("FFMPEG_BIN", "ffmpeg"),
 		FFprobeBin:                 envOr("FFPROBE_BIN", "ffprobe"),
 		FFmpegHWAccel:              strings.ToLower(envOr("FFMPEG_HWACCEL", "auto")),
@@ -186,6 +192,12 @@ func Load() (Config, error) {
 	}
 	if cfg.MaxProjectUploads < 1 {
 		cfg.MaxProjectUploads = 4
+	}
+	if cfg.YouTubeDownloadTimeout < time.Minute {
+		cfg.YouTubeDownloadTimeout = 30 * time.Minute
+	}
+	if cfg.YouTubeMaxDownloadBytes < 1<<20 {
+		cfg.YouTubeMaxDownloadBytes = 8 << 30
 	}
 	if cfg.ElevenLabsRequestTimeout < time.Second {
 		cfg.ElevenLabsRequestTimeout = 15 * time.Minute
@@ -549,6 +561,22 @@ func resolveExisting(path, cwd string) string {
 		return path
 	}
 	return abs
+}
+
+func resolveYouTubeDownloader(cwd string) string {
+	if configured := strings.TrimSpace(os.Getenv("YTDLP_BIN")); configured != "" {
+		if filepath.IsAbs(configured) || strings.ContainsRune(configured, filepath.Separator) {
+			return resolveExisting(configured, cwd)
+		}
+		return configured
+	}
+	local := filepath.Join("scripts", ".venv", "bin", "yt-dlp")
+	if resolved := resolveExisting(local, cwd); resolved != "" {
+		if _, err := os.Stat(resolved); err == nil {
+			return resolved
+		}
+	}
+	return "yt-dlp"
 }
 
 func envOr(key, fallback string) string {

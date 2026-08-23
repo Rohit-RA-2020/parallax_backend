@@ -271,7 +271,7 @@ func (b *Builder) build(ctx context.Context, projectID, rel string, enqueued tim
 	posterRel := filepath.ToSlash(filepath.Join(".parallax", "previews", key+".jpg"))
 	codec := strings.TrimSpace(info.VideoCodec)
 	reason := ffmpeg.PreviewReason(rel, info)
-	plan := ffmpeg.PreviewEncodePlan(b.Bins)
+	plan := ffmpeg.PreviewEncodePlanForSource(b.Bins, codec)
 	frameCount := timelineFrameCount(info.Duration)
 	existingFrames := existingTimelineFrames(project.Dir, key, frameCount)
 
@@ -356,7 +356,7 @@ func (b *Builder) build(ctx context.Context, projectID, rel string, enqueued tim
 		StartedAt:      enqueued,
 	})
 	transcodeStarted := time.Now()
-	encoded, err := ffmpeg.WritePreviewWithInfo(ctx, b.Bins, project.Dir, rel, proxyRel, info.Duration, func(at, total float64) {
+	encoded, err := ffmpeg.WritePreviewWithSourceCodec(ctx, b.Bins, project.Dir, rel, proxyRel, info.Duration, codec, func(at, total float64) {
 		progress := ""
 		if total > 0 {
 			pct := int(at / total * 100)

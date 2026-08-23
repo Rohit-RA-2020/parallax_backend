@@ -155,7 +155,14 @@ func (a *Agent) Run(ctx context.Context, in Input, emit Sink) Outcome {
 				Iteration: i,
 			}))
 
-			res := a.Tools.Execute(ctx, call.Function.Name, call.Function.Arguments)
+			toolCtx := tools.WithProgress(ctx, func(progress tools.Progress) {
+				emit(NewEvent(EventToolProgress, ToolProgressPayload{
+					ID: call.ID, Name: call.Function.Name, Phase: progress.Phase,
+					Current: progress.Current, Total: progress.Total, Percent: progress.Percent,
+					Iteration: i,
+				}))
+			})
+			res := a.Tools.Execute(toolCtx, call.Function.Name, call.Function.Arguments)
 			emit(NewEvent(EventToolResult, ToolResultPayload{
 				ID:        call.ID,
 				Name:      call.Function.Name,

@@ -32,6 +32,32 @@ func (r Result) JSON() string {
 // Handler executes a tool with already-parsed JSON arguments.
 type Handler func(ctx context.Context, args json.RawMessage) Result
 
+// Progress is an optional realtime update emitted by long-running tools.
+type Progress struct {
+	Phase   string  `json:"phase,omitempty"`
+	Current int64   `json:"current,omitempty"`
+	Total   int64   `json:"total,omitempty"`
+	Percent float64 `json:"percent,omitempty"`
+}
+
+type progressSink func(Progress)
+type progressContextKey struct{}
+
+// WithProgress attaches a progress sink to a tool execution context.
+func WithProgress(ctx context.Context, sink func(Progress)) context.Context {
+	if sink == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, progressContextKey{}, progressSink(sink))
+}
+
+// ReportProgress sends an update when the caller supplied a progress sink.
+func ReportProgress(ctx context.Context, progress Progress) {
+	if sink, ok := ctx.Value(progressContextKey{}).(progressSink); ok && sink != nil {
+		sink(progress)
+	}
+}
+
 type spec struct {
 	tool    llm.ToolSpec
 	handler Handler

@@ -45,7 +45,7 @@ func (s *scriptedProvider) Stream(_ context.Context, _ llm.Request) (<-chan llm.
 func TestAgentLoopToolThenAnswer(t *testing.T) {
 	reg := tools.NewRegistry()
 	reg.Register(llm.NewFunctionTool("probe_media", "probe", json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`)),
-		func(_ context.Context, args json.RawMessage) tools.Result {
+		func(ctx context.Context, args json.RawMessage) tools.Result {
 			var in struct {
 				Path string `json:"path"`
 			}
@@ -53,6 +53,7 @@ func TestAgentLoopToolThenAnswer(t *testing.T) {
 			if in.Path != "talk.mp4" {
 				t.Fatalf("path=%s", in.Path)
 			}
+			tools.ReportProgress(ctx, tools.Progress{Phase: "Probing", Percent: 50})
 			return tools.Result{OK: true, Output: map[string]any{"duration": 12.5}}
 		})
 
@@ -91,7 +92,7 @@ func TestAgentLoopToolThenAnswer(t *testing.T) {
 	}
 
 	var text strings.Builder
-	var sawCall, sawResult bool
+	var sawCall, sawProgress, sawResult bool
 	for _, ev := range events {
 		switch ev.Type {
 		case EventText:
@@ -100,12 +101,16 @@ func TestAgentLoopToolThenAnswer(t *testing.T) {
 			text.WriteString(p.Delta)
 		case EventToolCall:
 			sawCall = true
+		case EventToolProgress:
+			var p ToolProgressPayload
+			_ = json.Unmarshal(ev.Data, &p)
+			sawProgress = p.ID == "call_1" && p.Name == "probe_media" && p.Phase == "Probing" && p.Percent == 50
 		case EventToolResult:
 			sawResult = true
 		}
 	}
-	if !sawCall || !sawResult {
-		t.Fatalf("missing tool events: call=%v result=%v events=%d", sawCall, sawResult, len(events))
+	if !sawCall || !sawProgress || !sawResult {
+		t.Fatalf("missing tool events: call=%v progress=%v result=%v events=%d", sawCall, sawProgress, sawResult, len(events))
 	}
 	if !strings.Contains(text.String(), "12.5 seconds") {
 		t.Fatalf("text=%q", text.String())

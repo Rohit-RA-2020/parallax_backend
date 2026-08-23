@@ -20,6 +20,7 @@ Agent loop  (no framework)
     ├── list_workspace / inspect_file / probe_media
     └── run_ffmpeg  →  argv parse → sandbox validate → exec.Command (no shell)
     └── search_web   →  Exa Search API (links + highlights/full page text)
+    └── download_youtube_video → requested YouTube resolution + FFmpeg audio merge
     └── generate_image →  Gemini image generation (still lands in the project bin)
     └── search_transcript / get_transcript / add_captions  →  Whisper index + timed captions
     │
@@ -67,6 +68,20 @@ The server keeps the key private and exposes a `search_web` function to
 Director. It uses Exa's `/search` endpoint, defaults to compact highlights,
 and supports full page text with `content_mode: "text"`. `EXA_BASE_URL` is
 optional and defaults to `https://api.exa.ai`.
+
+Director can import a single YouTube video into the project bin with the
+`download_youtube_video` tool. The tool requires an explicit resolution and
+uses exact matching unless the user permits an `at_most` fallback. Adaptive
+video and audio streams are merged with FFmpeg. Only download content you own
+or have permission to use. If the Go downloader is rejected by YouTube, the
+tool automatically falls back to the pinned yt-dlp version installed by the
+Docker image or `scripts/setup-whisper.sh`. Optional settings:
+
+```bash
+YOUTUBE_DOWNLOAD_TIMEOUT_SECONDS=1800
+YOUTUBE_MAX_DOWNLOAD_BYTES=8589934592
+# YTDLP_BIN=./scripts/.venv/bin/yt-dlp
+```
 
 To let Director generate stills into the project bin, set `GEMINI_API_KEY`
 (or `GOOGLE_API_KEY`). The server keeps the key private and exposes a
@@ -179,7 +194,7 @@ QDRANT_URL=http://127.0.0.1:6333
 
 ## Run
 
-The backend requires Go 1.25.8 or newer.
+The backend requires Go 1.26 or newer.
 
 ```bash
 cd parallax_backend

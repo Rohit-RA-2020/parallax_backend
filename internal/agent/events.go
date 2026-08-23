@@ -11,6 +11,7 @@ const (
 	EventText           EventType = "text"
 	EventThinking       EventType = "thinking"
 	EventToolCall       EventType = "tool_call"
+	EventToolProgress   EventType = "tool_progress"
 	EventToolResult     EventType = "tool_result"
 	EventDone           EventType = "done"
 	EventError          EventType = "error"
@@ -67,6 +68,16 @@ type ToolResultPayload struct {
 	Error     string `json:"error,omitempty"`
 	ElapsedMS int64  `json:"elapsed_ms"`
 	Iteration int    `json:"iteration"`
+}
+
+type ToolProgressPayload struct {
+	ID        string  `json:"id"`
+	Name      string  `json:"name"`
+	Phase     string  `json:"phase,omitempty"`
+	Current   int64   `json:"current,omitempty"`
+	Total     int64   `json:"total,omitempty"`
+	Percent   float64 `json:"percent,omitempty"`
+	Iteration int     `json:"iteration"`
 }
 
 type DonePayload struct {

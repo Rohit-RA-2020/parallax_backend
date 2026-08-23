@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create a local venv and install faster-whisper (no sudo).
+# Create a local venv and install faster-whisper plus yt-dlp (no sudo).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 VENV="$ROOT/.venv"
@@ -24,3 +24,4 @@ echo "  WHISPER_PYTHON=$VENV/bin/python"
 echo "  WHISPER_MODEL=large-v3-turbo"
 echo "  WHISPER_DEVICE=auto"
 echo "  WHISPER_COMPUTE=int8"
+echo "  YTDLP_BIN=$VENV/bin/yt-dlp"

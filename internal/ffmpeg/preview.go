@@ -30,12 +30,24 @@ type PreviewEncodeInfo struct {
 // PreviewEncodePlan reports the encoder selected for a playback proxy before
 // FFmpeg runs. The completed result may differ if hardware encoding falls back.
 func PreviewEncodePlan(bins Bins) PreviewEncodeInfo {
+	return PreviewEncodePlanForSource(bins, "")
+}
+
+// PreviewEncodePlanForSource reports the proxy pipeline selected for a known
+// source codec. AV1 is decoded in software because older NVIDIA cards can
+// expose CUDA while lacking AV1 NVDEC; forcing CUDA in that case makes FFmpeg
+// retry every packet without ever producing progress.
+func PreviewEncodePlanForSource(bins Bins, sourceCodec string) PreviewEncodeInfo {
 	if bins.Accel.Enabled() {
+		pipeline := previewHardwarePipeline(bins.Accel)
+		if !fullGPUPreviewSupported(bins.Accel, sourceCodec) {
+			pipeline = "gpu_encode"
+		}
 		return PreviewEncodeInfo{
 			Encoder:  bins.Accel.H264,
 			Device:   previewDeviceLabel(bins.Accel),
 			Hardware: true,
-			Pipeline: previewHardwarePipeline(bins.Accel),
+			Pipeline: pipeline,
 		}
 	}
 	return PreviewEncodeInfo{Encoder: "libx264", Device: "CPU", Pipeline: "cpu"}
@@ -122,6 +134,12 @@ func WritePreview(ctx context.Context, bins Bins, workspace, inRel, outRel strin
 // WritePreviewWithInfo transcodes a preview and returns the encoder that
 // actually succeeded, including any CPU fallback performed by Run.
 func WritePreviewWithInfo(ctx context.Context, bins Bins, workspace, inRel, outRel string, duration float64, onProgress PreviewProgress) (PreviewEncodeInfo, error) {
+	return WritePreviewWithSourceCodec(ctx, bins, workspace, inRel, outRel, duration, "", onProgress)
+}
+
+// WritePreviewWithSourceCodec is WritePreviewWithInfo with the probed input
+// codec supplied so an unsupported hardware decoder is not selected.
+func WritePreviewWithSourceCodec(ctx context.Context, bins Bins, workspace, inRel, outRel string, duration float64, sourceCodec string, onProgress PreviewProgress) (PreviewEncodeInfo, error) {
 	if err := os.MkdirAll(filepath.Join(workspace, filepath.Dir(filepath.FromSlash(outRel))), 0o755); err != nil {
 		return PreviewEncodeInfo{}, err
 	}
@@ -172,7 +190,7 @@ func WritePreviewWithInfo(ctx context.Context, bins Bins, workspace, inRel, outR
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		result, runErr := runPreview(ctx, bins, cmd, workspace)
+		result, runErr := runPreview(ctx, bins, cmd, workspace, sourceCodec)
 		done <- outcome{result: result, err: runErr}
 	}()
 
@@ -182,7 +200,7 @@ func WritePreviewWithInfo(ctx context.Context, bins Bins, workspace, inRel, outR
 		select {
 		case finished := <-done:
 			if finished.err != nil && strings.Contains(finished.err.Error(), "does not contain any stream") {
-				return writePreviewVideoOnly(ctx, bins, workspace, inRel, outRel, progRel, duration, onProgress)
+				return writePreviewVideoOnly(ctx, bins, workspace, inRel, outRel, progRel, duration, sourceCodec, onProgress)
 			}
 			return previewEncodeResult(bins, finished.result), finished.err
 		case <-tick.C:
@@ -198,7 +216,7 @@ func WritePreviewWithInfo(ctx context.Context, bins Bins, workspace, inRel, outR
 	}
 }
 
-func writePreviewVideoOnly(ctx context.Context, bins Bins, workspace, inRel, outRel, progRel string, duration float64, onProgress PreviewProgress) (PreviewEncodeInfo, error) {
+func writePreviewVideoOnly(ctx context.Context, bins Bins, workspace, inRel, outRel, progRel string, duration float64, sourceCodec string, onProgress PreviewProgress) (PreviewEncodeInfo, error) {
 	cmd, err := Validate([]string{
 		"ffmpeg", "-y",
 		"-i", inRel,
@@ -223,7 +241,7 @@ func writePreviewVideoOnly(ctx context.Context, bins Bins, workspace, inRel, out
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		result, runErr := runPreview(ctx, bins, cmd, workspace)
+		result, runErr := runPreview(ctx, bins, cmd, workspace, sourceCodec)
 		done <- outcome{result: result, err: runErr}
 	}()
 	tick := time.NewTicker(400 * time.Millisecond)
@@ -245,25 +263,31 @@ func writePreviewVideoOnly(ctx context.Context, bins Bins, workspace, inRel, out
 	}
 }
 
-func runPreview(ctx context.Context, bins Bins, cmd Command, workspace string) (Result, error) {
-	if cudaCmd, ok := cudaPreviewCommand(cmd, bins.Accel); ok {
-		cudaBins := bins
-		cudaBins.Accel = Accel{}
-		gpu, err := Run(ctx, cudaBins, cudaCmd, workspace, previewTimeout)
-		if err == nil {
-			return gpu, nil
+func runPreview(ctx context.Context, bins Bins, cmd Command, workspace, sourceCodec string) (Result, error) {
+	if fullGPUPreviewSupported(bins.Accel, sourceCodec) {
+		if cudaCmd, ok := cudaPreviewCommand(cmd, bins.Accel); ok {
+			cudaBins := bins
+			cudaBins.Accel = Accel{}
+			gpu, err := Run(ctx, cudaBins, cudaCmd, workspace, previewTimeout)
+			if err == nil {
+				return gpu, nil
+			}
+			if ctx.Err() != nil {
+				return gpu, err
+			}
+			fallback, fallbackErr := Run(ctx, bins, cmd, workspace, previewTimeout)
+			if fallbackErr == nil {
+				fallback.Stderr = "full gpu preview failed; retried with fallback pipeline\n" + lastLines(gpu.Stderr, 8) + "\n" + fallback.Stderr
+				return fallback, nil
+			}
+			return gpu, fmt.Errorf("%w (preview fallback also failed: %v)", err, fallbackErr)
 		}
-		if ctx.Err() != nil {
-			return gpu, err
-		}
-		fallback, fallbackErr := Run(ctx, bins, cmd, workspace, previewTimeout)
-		if fallbackErr == nil {
-			fallback.Stderr = "full gpu preview failed; retried with fallback pipeline\n" + lastLines(gpu.Stderr, 8) + "\n" + fallback.Stderr
-			return fallback, nil
-		}
-		return gpu, fmt.Errorf("%w (preview fallback also failed: %v)", err, fallbackErr)
 	}
 	return Run(ctx, bins, cmd, workspace, previewTimeout)
+}
+
+func fullGPUPreviewSupported(accel Accel, sourceCodec string) bool {
+	return accel.Backend == "cuda" && normalizeVideoCodec(sourceCodec) != "av1"
 }
 
 func cudaPreviewCommand(cmd Command, accel Accel) (Command, bool) {

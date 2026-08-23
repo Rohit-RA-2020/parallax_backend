@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.25-bookworm AS builder
+FROM golang:1.26-bookworm AS builder
 WORKDIR /src
 
 COPY go.mod go.sum ./
@@ -29,7 +29,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && python -m venv /opt/whisper \
     && /opt/whisper/bin/pip install --no-cache-dir --upgrade pip \
-    && /opt/whisper/bin/pip install --no-cache-dir "faster-whisper>=1.1.0" \
+    && /opt/whisper/bin/pip install --no-cache-dir "faster-whisper>=1.1.0" "yt-dlp==2026.8.19" \
     && if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
          /opt/whisper/bin/pip install --no-cache-dir \
            nvidia-cublas-cu12 nvidia-cuda-runtime-cu12 nvidia-cudnn-cu12; \

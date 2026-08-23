@@ -174,6 +174,9 @@ func main() {
 		ElevenTTSOutputFormat:   cfg.ElevenLabsTTSOutputFormat,
 		ElevenSFXOutputFormat:   cfg.ElevenLabsSFXOutputFormat,
 		ElevenLimiter:           tools.NewLimiter(cfg.ElevenLabsMaxConcurrency),
+		YouTubeTimeout:          cfg.YouTubeDownloadTimeout,
+		YouTubeMaxBytes:         cfg.YouTubeMaxDownloadBytes,
+		YouTubeYTDLPBin:         cfg.YouTubeYTDLPBin,
 		Uploads:                 uploads,
 		NewLLM: func(l config.LLM) llm.ChatProvider {
 			return llm.NewCompatClient(l.BaseURL, l.APIKey, l.Model)
