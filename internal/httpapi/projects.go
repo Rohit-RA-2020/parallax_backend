@@ -450,6 +450,13 @@ func (s *Server) mediaResponses(projectID string, media []projects.Media) []medi
 			if copy.PosterPath != "" {
 				copy.PosterPath = projectFileURL(projectID, copy.PosterPath)
 			}
+			if len(copy.TimelineFrames) > 0 {
+				frames := make([]string, len(copy.TimelineFrames))
+				for i, frame := range copy.TimelineFrames {
+					frames[i] = projectFileURL(projectID, frame)
+				}
+				copy.TimelineFrames = frames
+			}
 			itemOut.Preview = &copy
 		}
 		out = append(out, itemOut)
@@ -466,7 +473,7 @@ func (s *Server) ensurePreviews(projectID string, media []projects.Media) {
 		if item.Kind != "video" {
 			continue
 		}
-		if _, ok := known[item.Path]; ok {
+		if st, ok := known[item.Path]; ok && (st.TimelineReady || st.TimelinePending) {
 			continue
 		}
 		s.Previews.Enqueue(projectID, item.Path)

@@ -76,3 +76,28 @@ func TestExtractFrameWritesJPEG(t *testing.T) {
 		t.Fatalf("not a jpeg: %d bytes", len(data))
 	}
 }
+
+func TestExtractThumbnailBoundsFrameWidth(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skip("ffprobe not installed")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "wide.mp4")
+	cmd := exec.Command("ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=blue:s=640x360:d=1", "-pix_fmt", "yuv420p", src)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg: %v\n%s", err, out)
+	}
+	if err := ExtractThumbnail(context.Background(), Bins{FFmpeg: "ffmpeg", FFprobe: "ffprobe"}, dir, "wide.mp4", "thumb.jpg", 0.2); err != nil {
+		t.Fatal(err)
+	}
+	info, err := ProbeMedia(context.Background(), Bins{FFmpeg: "ffmpeg", FFprobe: "ffprobe"}, dir, "thumb.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Width != 320 || info.Height != 180 {
+		t.Fatalf("thumbnail=%dx%d want 320x180", info.Width, info.Height)
+	}
+}

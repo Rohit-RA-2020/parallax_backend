@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,9 +18,10 @@ import (
 )
 
 const (
-	queueSize     = 32
-	jobTimeout    = 4 * time.Hour
-	posterSeekSec = 2.0
+	queueSize          = 32
+	jobTimeout         = 4 * time.Hour
+	posterSeekSec      = 2.0
+	timelineFrameLimit = 12
 )
 
 // Builder builds H.264 preview proxies so the browser can play MKV/HEVC/10-bit files.
@@ -270,20 +272,54 @@ func (b *Builder) build(ctx context.Context, projectID, rel string, enqueued tim
 	codec := strings.TrimSpace(info.VideoCodec)
 	reason := ffmpeg.PreviewReason(rel, info)
 	plan := ffmpeg.PreviewEncodePlan(b.Bins)
+	frameCount := timelineFrameCount(info.Duration)
+	existingFrames := existingTimelineFrames(project.Dir, key, frameCount)
 
 	if st, err := os.Stat(filepath.Join(project.Dir, filepath.FromSlash(proxyRel))); err == nil && st.Size() > 0 {
-		b.Mark(projectID, rel, Status{
-			State:      StateReady,
-			URLPath:    proxyRel,
-			PosterPath: existingPoster(project.Dir, posterRel),
-			Codec:      codec,
-			Reason:     reason,
-		})
+		poster := existingPoster(project.Dir, posterRel)
+		if poster == "" && len(existingFrames) > 0 {
+			poster = existingFrames[0]
+		}
+		status := Status{
+			State:           StateReady,
+			URLPath:         proxyRel,
+			PosterPath:      poster,
+			TimelineFrames:  existingFrames,
+			Codec:           codec,
+			Reason:          reason,
+			TimelinePending: len(existingFrames) < frameCount,
+			TimelineReady:   len(existingFrames) >= frameCount,
+		}
+		b.Mark(projectID, rel, status)
+		if len(existingFrames) < frameCount {
+			status.TimelineFrames = b.buildTimelineFrames(ctx, project.Dir, rel, key, info.Duration)
+			if status.PosterPath == "" && len(status.TimelineFrames) > 0 {
+				status.PosterPath = status.TimelineFrames[0]
+			}
+			status.TimelinePending = false
+			status.TimelineReady = true
+			b.Mark(projectID, rel, status)
+		}
 		return nil
 	}
 
 	if ffmpeg.BrowserPlayable(rel, info) {
-		b.Mark(projectID, rel, Status{State: StateOriginal, Codec: codec})
+		status := Status{State: StateOriginal, Codec: codec, TimelineFrames: existingFrames, TimelinePending: len(existingFrames) < frameCount, TimelineReady: len(existingFrames) >= frameCount}
+		if len(existingFrames) > 0 {
+			status.PosterPath = existingFrames[0]
+		}
+		// Make the original playable immediately. Filmstrip generation continues
+		// within this serial background job and never blocks media playback.
+		b.Mark(projectID, rel, status)
+		if len(existingFrames) < frameCount {
+			status.TimelineFrames = b.buildTimelineFrames(ctx, project.Dir, rel, key, info.Duration)
+			if len(status.TimelineFrames) > 0 {
+				status.PosterPath = status.TimelineFrames[0]
+			}
+			status.TimelinePending = false
+			status.TimelineReady = true
+			b.Mark(projectID, rel, status)
+		}
 		return nil
 	}
 
@@ -302,19 +338,22 @@ func (b *Builder) build(ctx context.Context, projectID, rel string, enqueued tim
 		posterRel = ""
 	}
 	timings.PosterMs = elapsedMs(posterStarted)
+	timelineFrames := b.buildTimelineFrames(ctx, project.Dir, rel, key, info.Duration)
 
 	b.Mark(projectID, rel, Status{
-		State:      StateBuilding,
-		PosterPath: posterRel,
-		Reason:     reason,
-		Codec:      codec,
-		Progress:   "0%",
-		Encoder:    plan.Encoder,
-		Device:     plan.Device,
-		Hardware:   plan.Hardware,
-		Pipeline:   plan.Pipeline,
-		Timings:    timings,
-		StartedAt:  enqueued,
+		State:          StateBuilding,
+		PosterPath:     posterRel,
+		TimelineFrames: timelineFrames,
+		TimelineReady:  true,
+		Reason:         reason,
+		Codec:          codec,
+		Progress:       "0%",
+		Encoder:        plan.Encoder,
+		Device:         plan.Device,
+		Hardware:       plan.Hardware,
+		Pipeline:       plan.Pipeline,
+		Timings:        timings,
+		StartedAt:      enqueued,
 	})
 	transcodeStarted := time.Now()
 	encoded, err := ffmpeg.WritePreviewWithInfo(ctx, b.Bins, project.Dir, rel, proxyRel, info.Duration, func(at, total float64) {
@@ -354,20 +393,77 @@ func (b *Builder) build(ctx context.Context, projectID, rel string, enqueued tim
 	timings.TranscodeMs = elapsedMs(transcodeStarted)
 	timings.TotalMs = elapsedMs(buildStarted) + timings.QueueMs
 	b.Mark(projectID, rel, Status{
-		State:      StateReady,
-		URLPath:    proxyRel,
-		PosterPath: posterRel,
-		Reason:     reason,
-		Codec:      codec,
-		Encoder:    encoded.Encoder,
-		Device:     encoded.Device,
-		Hardware:   encoded.Hardware,
-		Pipeline:   encoded.Pipeline,
-		Timings:    timings,
-		StartedAt:  enqueued,
+		State:          StateReady,
+		URLPath:        proxyRel,
+		PosterPath:     posterRel,
+		TimelineFrames: timelineFrames,
+		TimelineReady:  true,
+		Reason:         reason,
+		Codec:          codec,
+		Encoder:        encoded.Encoder,
+		Device:         encoded.Device,
+		Hardware:       encoded.Hardware,
+		Pipeline:       encoded.Pipeline,
+		Timings:        timings,
+		StartedAt:      enqueued,
 	})
 	b.log().Info("preview ready", "path", rel, "proxy", proxyRel, "codec", codec, "encoder", encoded.Encoder, "device", encoded.Device, "pipeline", encoded.Pipeline)
 	return nil
+}
+
+func timelineFrameCount(duration float64) int {
+	if duration <= 0 {
+		return 0
+	}
+	count := int(math.Ceil(duration / 15))
+	if count < 4 {
+		count = 4
+	}
+	if count > timelineFrameLimit {
+		count = timelineFrameLimit
+	}
+	return count
+}
+
+func timelineFrameRel(key string, index int) string {
+	return filepath.ToSlash(filepath.Join(".parallax", "previews", fmt.Sprintf("%s-timeline-%02d.jpg", key, index)))
+}
+
+func existingTimelineFrames(projectDir, key string, count int) []string {
+	frames := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		rel := timelineFrameRel(key, i)
+		if st, err := os.Stat(filepath.Join(projectDir, filepath.FromSlash(rel))); err == nil && st.Size() > 0 {
+			frames = append(frames, rel)
+		}
+	}
+	return frames
+}
+
+func (b *Builder) buildTimelineFrames(ctx context.Context, projectDir, sourceRel, key string, duration float64) []string {
+	count := timelineFrameCount(duration)
+	if count == 0 {
+		return nil
+	}
+	frames := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		if err := ctx.Err(); err != nil {
+			break
+		}
+		rel := timelineFrameRel(key, i)
+		abs := filepath.Join(projectDir, filepath.FromSlash(rel))
+		if st, err := os.Stat(abs); err == nil && st.Size() > 0 {
+			frames = append(frames, rel)
+			continue
+		}
+		at := duration * (float64(i) + 0.5) / float64(count)
+		if err := ffmpeg.ExtractThumbnail(ctx, b.Bins, projectDir, sourceRel, rel, at); err != nil {
+			b.log().Info("timeline thumbnail", "path", sourceRel, "at", at, "err", err)
+			continue
+		}
+		frames = append(frames, rel)
+	}
+	return frames
 }
 
 func elapsedMs(start time.Time) int64 {

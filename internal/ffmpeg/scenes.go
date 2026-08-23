@@ -102,20 +102,33 @@ func escapeLavfiMoviePath(rel string) string {
 
 // ExtractFrame writes one JPEG still at the given timestamp (seconds).
 func ExtractFrame(ctx context.Context, bins Bins, workspace, inRel, outRel string, at float64) error {
+	return extractJPEG(ctx, bins, workspace, inRel, outRel, at, "", "3")
+}
+
+// ExtractThumbnail writes one small JPEG suitable for timeline filmstrips.
+// Keeping these images bounded avoids loading full-resolution stills for every
+// visible clip in the editor.
+func ExtractThumbnail(ctx context.Context, bins Bins, workspace, inRel, outRel string, at float64) error {
+	return extractJPEG(ctx, bins, workspace, inRel, outRel, at, "scale=320:-2:force_original_aspect_ratio=decrease", "4")
+}
+
+func extractJPEG(ctx context.Context, bins Bins, workspace, inRel, outRel string, at float64, filter, quality string) error {
 	if at < 0 {
 		at = 0
 	}
 	if err := os.MkdirAll(filepath.Join(workspace, filepath.Dir(filepath.FromSlash(outRel))), 0o755); err != nil {
 		return err
 	}
-	cmd, err := Validate([]string{
+	args := []string{
 		"ffmpeg", "-y",
 		"-ss", formatTimestamp(at),
 		"-i", inRel,
-		"-frames:v", "1",
-		"-q:v", "3",
-		outRel,
-	}, ValidateOpts{Workspace: workspace})
+	}
+	if filter != "" {
+		args = append(args, "-vf", filter)
+	}
+	args = append(args, "-frames:v", "1", "-q:v", quality, outRel)
+	cmd, err := Validate(args, ValidateOpts{Workspace: workspace})
 	if err != nil {
 		return fmt.Errorf("extract frame: %w", err)
 	}

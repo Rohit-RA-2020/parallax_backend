@@ -27,21 +27,24 @@ type Timings struct {
 
 // Status is the public preview-proxy state for one media file.
 type Status struct {
-	Path       string    `json:"path"`
-	State      string    `json:"state"`
-	URLPath    string    `json:"url_path,omitempty"`
-	PosterPath string    `json:"poster_path,omitempty"`
-	Progress   string    `json:"progress,omitempty"`
-	Error      string    `json:"error,omitempty"`
-	Reason     string    `json:"reason,omitempty"`
-	Codec      string    `json:"codec,omitempty"`
-	Encoder    string    `json:"encoder,omitempty"`
-	Device     string    `json:"device,omitempty"`
-	Hardware   bool      `json:"hardware"`
-	Pipeline   string    `json:"pipeline,omitempty"`
-	Timings    Timings   `json:"timings,omitempty"`
-	StartedAt  time.Time `json:"started_at,omitempty"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	Path            string    `json:"path"`
+	State           string    `json:"state"`
+	URLPath         string    `json:"url_path,omitempty"`
+	PosterPath      string    `json:"poster_path,omitempty"`
+	TimelineFrames  []string  `json:"timeline_frames,omitempty"`
+	TimelinePending bool      `json:"timeline_pending,omitempty"`
+	TimelineReady   bool      `json:"timeline_ready,omitempty"`
+	Progress        string    `json:"progress,omitempty"`
+	Error           string    `json:"error,omitempty"`
+	Reason          string    `json:"reason,omitempty"`
+	Codec           string    `json:"codec,omitempty"`
+	Encoder         string    `json:"encoder,omitempty"`
+	Device          string    `json:"device,omitempty"`
+	Hardware        bool      `json:"hardware"`
+	Pipeline        string    `json:"pipeline,omitempty"`
+	Timings         Timings   `json:"timings,omitempty"`
+	StartedAt       time.Time `json:"started_at,omitempty"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 func statusFile(projectDir string) string {
@@ -67,10 +70,18 @@ func (b *Builder) Mark(projectID, rel string, st Status) {
 		b.live = map[string]Status{}
 	}
 	key := statusKey(projectID, rel)
-	if previous, ok := b.live[key]; ok && st.StartedAt.IsZero() {
-		st.StartedAt = previous.StartedAt
-		if st.Timings == (Timings{}) {
-			st.Timings = previous.Timings
+	if previous, ok := b.live[key]; ok {
+		if st.StartedAt.IsZero() {
+			st.StartedAt = previous.StartedAt
+			if st.Timings == (Timings{}) {
+				st.Timings = previous.Timings
+			}
+		}
+		if len(st.TimelineFrames) == 0 {
+			st.TimelineFrames = previous.TimelineFrames
+		}
+		if previous.TimelineReady {
+			st.TimelineReady = true
 		}
 	}
 	b.live[key] = st
