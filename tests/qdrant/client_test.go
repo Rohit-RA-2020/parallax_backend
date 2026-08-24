@@ -24,6 +24,57 @@ func TestCollectionNameAndPointID(t *testing.T) {
 	}
 }
 
+func TestUpsertBatchesLargePayload(t *testing.T) {
+	requests := 0
+	totalPoints := 0
+	maxBody := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/points") {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload struct {
+			Points []Point `json:"points"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		requests++
+		totalPoints += len(payload.Points)
+		if len(body) > maxBody {
+			maxBody = len(body)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"result":true}`))
+	}))
+	defer srv.Close()
+
+	largeText := strings.Repeat("x", 9<<20)
+	points := make([]Point, 4)
+	for i := range points {
+		points[i] = Point{
+			ID:      PointID("hash", "seg-"+string(rune('0'+i))),
+			Vector:  []float32{0.1, 0.2},
+			Payload: map[string]any{"text": largeText},
+		}
+	}
+
+	c := NewClient(srv.URL, "")
+	c.HTTPClient = srv.Client()
+	if err := c.Upsert(context.Background(), "p_demo", points); err != nil {
+		t.Fatal(err)
+	}
+	if requests < 2 || totalPoints != len(points) {
+		t.Fatalf("requests=%d totalPoints=%d", requests, totalPoints)
+	}
+	if maxBody >= 32<<20 {
+		t.Fatalf("batch body=%d exceeds Qdrant limit", maxBody)
+	}
+}
+
 func TestSearchFiltersPaths(t *testing.T) {
 	var got map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

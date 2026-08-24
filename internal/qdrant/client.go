@@ -61,6 +61,11 @@ type Point struct {
 	Payload map[string]any `json:"payload"`
 }
 
+// Qdrant rejects request bodies at 32 MiB. Keep a margin for the request
+// envelope and version differences in JSON encoding so large indexes can be
+// sent in several safe requests.
+const maxUpsertPayloadBytes = 24 << 20
+
 // Hit is one search result.
 type Hit struct {
 	ID      string         `json:"id"`
@@ -103,6 +108,40 @@ func (c *Client) Upsert(ctx context.Context, collection string, points []Point) 
 	if len(points) == 0 {
 		return nil
 	}
+
+	// A full transcript can contain thousands of points. Sending all of them
+	// together can exceed Qdrant's 32 MiB JSON body limit even though each point
+	// is valid on its own. Estimate the encoded size per point and split the
+	// request before it reaches the server.
+	const envelopeBytes = len(`{"points":[]}`)
+	batch := make([]Point, 0, len(points))
+	batchBytes := envelopeBytes
+	for _, point := range points {
+		encoded, err := json.Marshal(point)
+		if err != nil {
+			return err
+		}
+		// Add one byte per point as a conservative allowance for commas and
+		// keep the estimate below the actual Qdrant limit.
+		candidateBytes := batchBytes + len(encoded) + 1
+		if len(batch) > 0 && candidateBytes > maxUpsertPayloadBytes {
+			if err := c.upsertBatch(ctx, collection, batch); err != nil {
+				return err
+			}
+			batch = batch[:0]
+			batchBytes = envelopeBytes
+			candidateBytes = batchBytes + len(encoded) + 1
+		}
+		if candidateBytes > maxUpsertPayloadBytes {
+			return fmt.Errorf("qdrant: point payload exceeds safe upsert limit (%d bytes)", maxUpsertPayloadBytes)
+		}
+		batch = append(batch, point)
+		batchBytes = candidateBytes
+	}
+	return c.upsertBatch(ctx, collection, batch)
+}
+
+func (c *Client) upsertBatch(ctx context.Context, collection string, points []Point) error {
 	status, body, err := c.do(ctx, http.MethodPut, "/collections/"+url.PathEscape(collection)+"/points?wait=true", map[string]any{
 		"points": points,
 	})

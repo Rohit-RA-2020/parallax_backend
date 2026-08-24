@@ -30,7 +30,7 @@ func RegisterTimeline(reg *Registry, env TimelineEnv) {
 	), env.getTimeline)
 	reg.Register(llm.NewFunctionTool(
 		"place_media",
-		"Put a workspace media file on the timeline the same way the editor does. Probes the file, places picture on V1, and adds a linked A1 audio clip when the file has sound. Stills go on V1. Audio-only files go on A1. Prefer this over hand-building add_item for imported files.",
+		"Put a workspace media file on the timeline the same way the editor does. Probes the file, places picture on V1, and adds a linked A1 audio clip when the file has sound. Stills go on V1. Audio-only files go on A1. The timeline mutation returns immediately; proxy and thumbnail work continues in the background. Prefer this over hand-building add_item for imported files.",
 		json.RawMessage(`{
 			"type":"object",
 			"properties":{
@@ -212,8 +212,7 @@ func (e TimelineEnv) editTimeline(ctx context.Context, raw json.RawMessage) Resu
 	return e.applyOps(ctx, ops, "The timeline change is staged and will commit with the current Director request.")
 }
 
-func (e TimelineEnv) applyOps(ctx context.Context, ops []projects.TimelineOperation, note string) Result {
-	previous := e.Transaction.Get()
+func (e TimelineEnv) applyOps(_ context.Context, ops []projects.TimelineOperation, note string) Result {
 	result, err := e.Transaction.Apply(ops)
 	if err != nil {
 		return Result{OK: false, Error: err.Error()}
@@ -225,16 +224,6 @@ func (e TimelineEnv) applyOps(ctx context.Context, ops []projects.TimelineOperat
 	output := map[string]any{
 		"timeline": result.Timeline, "created_ids": result.CreatedIDs, "removed_ids": result.RemovedIDs,
 		"staged": true, "note": note,
-	}
-	if e.Review != nil {
-		review, reviewErr := e.Review.ReviewDocument(ctx, visualreview.Request{
-			ProjectID: e.ProjectID, Revision: result.Timeline.Revision, Mode: visualreview.ModeChanged,
-		}, result.Timeline, &previous, false)
-		if reviewErr != nil {
-			output["visual_review_error"] = reviewErr.Error()
-		} else {
-			output["visual_review"] = review
-		}
 	}
 	return Result{OK: true, Output: output}
 }
