@@ -1,5 +1,7 @@
 # Parallax backend
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Rohit-RA-2020/parallax_backend)
+
 Go service for the Parallax media agent. A user describes a video/audio/image task; a framework-free agent loop streams a plan, calls tools, runs **ffmpeg/ffprobe** in a workspace sandbox, and keeps going until the job is done.
 
 The React frontend is wired to this service for projects, uploads, project media,
