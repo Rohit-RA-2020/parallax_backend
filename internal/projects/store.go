@@ -40,6 +40,8 @@ type Media struct {
 	Width       int       `json:"width,omitempty"`
 	Height      int       `json:"height,omitempty"`
 	ModifiedAt  time.Time `json:"modified_at"`
+	Origin      string    `json:"origin,omitempty"`
+	HasAudio    *bool     `json:"has_audio,omitempty"`
 }
 
 type Store struct {
@@ -343,6 +345,7 @@ func (s *Store) ListMedia(id string) ([]Media, error) {
 	if err != nil {
 		return nil, err
 	}
+	origins := readMediaOrigins(p)
 	var out []Media
 	err = filepath.WalkDir(p.Dir, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -361,6 +364,7 @@ func (s *Store) ListMedia(id string) ([]Media, error) {
 		if err != nil {
 			return err
 		}
+		m.Origin = origins[m.Path]
 		out = append(out, m)
 		return nil
 	})
@@ -438,10 +442,18 @@ func (s *Store) StatFile(id, rel string) (Media, error) {
 	if err != nil {
 		return Media{}, err
 	}
-	return mediaFromFile(p.Dir, full)
+	media, err := mediaFromFile(p.Dir, full)
+	if err == nil {
+		media.Origin = readMediaOrigins(p)[media.Path]
+	}
+	return media, err
 }
 
 func (s *Store) DeleteFile(id, rel string) error {
+	p, err := s.Get(id)
+	if err != nil {
+		return err
+	}
 	full, err := s.ResolveFile(id, rel)
 	if err != nil {
 		return err
@@ -451,6 +463,15 @@ func (s *Store) DeleteFile(id, rel string) error {
 			return ErrNotFound
 		}
 		return err
+	}
+	cleanRel := filepath.ToSlash(filepath.Clean(filepath.FromSlash(rel)))
+	s.uploadMu.Lock()
+	origins := readMediaOrigins(p)
+	delete(origins, cleanRel)
+	originErr := writeMediaOrigins(p, origins)
+	s.uploadMu.Unlock()
+	if originErr != nil {
+		return originErr
 	}
 	return s.Touch(id)
 }

@@ -15,6 +15,7 @@ import (
 	"parallax/internal/embed"
 	"parallax/internal/ffmpeg"
 	"parallax/internal/gemini"
+	"parallax/internal/gifs"
 	"parallax/internal/httpapi"
 	"parallax/internal/llm"
 	"parallax/internal/preview"
@@ -69,6 +70,10 @@ func main() {
 		Bins:      bins,
 	})
 	tools.RegisterWeb(reg, tools.WebEnv{APIKey: cfg.ExaAPIKey, BaseURL: cfg.ExaBaseURL})
+	gifService := gifs.New(gifs.Config{
+		GiphyAPIKey: cfg.GiphyAPIKey, GiphyBaseURL: cfg.GiphyBaseURL,
+		KlipyAPIKey: cfg.KlipyAPIKey, KlipyBaseURL: cfg.KlipyBaseURL,
+	})
 	tools.RegisterImage(reg, tools.ImageEnv{
 		Workspace: cfg.WorkspaceDir,
 		APIKey:    cfg.GeminiAPIKey,
@@ -157,6 +162,7 @@ func main() {
 		GeminiVeoVideoModel:     cfg.GeminiVeoVideoModel,
 		GeminiVideoTimeout:      cfg.GeminiVideoTimeout,
 		GeminiVideoPoll:         cfg.GeminiVideoPoll,
+		GIFs:                    gifService,
 		GeminiMusic:             geminiMusic,
 		GeminiMusicModel:        cfg.GeminiMusicModel,
 		GeminiMusicOutputFormat: cfg.GeminiMusicOutputFormat,

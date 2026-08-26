@@ -506,6 +506,8 @@ func (s *Server) attachDurations(projectID string, media []projects.Media) {
 			media[i].Width = info.Width
 			media[i].Height = info.Height
 		}
+		hasAudio := info.HasAudio
+		media[i].HasAudio = &hasAudio
 	}
 }
 

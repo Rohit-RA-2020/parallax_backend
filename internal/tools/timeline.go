@@ -273,6 +273,9 @@ func (e TimelineEnv) placementOps(ctx context.Context, doc projects.Timeline, op
 		return nil, err
 	}
 	layout := layoutFromProbe(rel, doc, info, op.StartFrame, op.At)
+	if e.isGIFVisual(rel) {
+		layout.HasAudio = false
+	}
 	clips := projects.PlaceMediaClips(layout)
 	if len(clips) == 0 {
 		return nil, jsonError("could not place " + rel)
@@ -311,7 +314,7 @@ func (e TimelineEnv) completeAddItem(ctx context.Context, doc projects.Timeline,
 	}
 	isImage := projects.KindForExt(filepath.Ext(rel)) == "image"
 	hasPicture := info.HasVideo || isImage || projects.KindForExt(filepath.Ext(rel)) == "video"
-	hasAudio := info.HasAudio && !isImage
+	hasAudio := info.HasAudio && !isImage && !e.isGIFVisual(rel)
 	if item.Track == "" {
 		if hasPicture {
 			item.Track = "V1"
@@ -467,6 +470,13 @@ func layoutFromProbe(path string, doc projects.Timeline, info ffmpeg.MediaProbe,
 		HasAudio:             hasAudio,
 		IsImage:              isImage,
 	}
+}
+
+func (e TimelineEnv) isGIFVisual(path string) bool {
+	if projects.LooksLikeGIFImport(path) {
+		return true
+	}
+	return e.Store != nil && e.ProjectID != "" && e.Store.MediaOrigin(e.ProjectID, path) == "gif"
 }
 
 func sourceFramesFromProbe(path string, info ffmpeg.MediaProbe, fps int) int {

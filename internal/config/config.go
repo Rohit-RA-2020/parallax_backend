@@ -52,6 +52,10 @@ type Config struct {
 	SettingsPath               string
 	ExaAPIKey                  string
 	ExaBaseURL                 string
+	GiphyAPIKey                string
+	GiphyBaseURL               string
+	KlipyAPIKey                string
+	KlipyBaseURL               string
 	GeminiAPIKey               string
 	GeminiBaseURL              string
 	GeminiImageModel           string
@@ -132,6 +136,10 @@ func Load() (Config, error) {
 		SettingsPath:               filepath.Join(data, "settings.json"),
 		ExaAPIKey:                  strings.TrimSpace(os.Getenv("EXA_API_KEY")),
 		ExaBaseURL:                 envOr("EXA_BASE_URL", "https://api.exa.ai"),
+		GiphyAPIKey:                strings.TrimSpace(os.Getenv("GIPHY_API_KEY")),
+		GiphyBaseURL:               strings.TrimRight(envOr("GIPHY_API_BASE", "https://api.giphy.com"), "/"),
+		KlipyAPIKey:                strings.TrimSpace(os.Getenv("KLIPY_API_KEY")),
+		KlipyBaseURL:               strings.TrimRight(envOr("KLIPY_API_BASE", "https://api.klipy.com"), "/"),
 		GeminiAPIKey:               firstNonEmpty(os.Getenv("GEMINI_API_KEY"), os.Getenv("GOOGLE_API_KEY")),
 		GeminiBaseURL:              strings.TrimRight(envOr("GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta"), "/"),
 		GeminiImageModel:           envOr("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image"),

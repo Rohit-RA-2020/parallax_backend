@@ -13,6 +13,7 @@ import (
 	"parallax/internal/elevenlabs"
 	"parallax/internal/ffmpeg"
 	"parallax/internal/gemini"
+	"parallax/internal/gifs"
 	"parallax/internal/llm"
 	"parallax/internal/preview"
 	"parallax/internal/projects"
@@ -40,6 +41,7 @@ type Server struct {
 	GeminiVeoVideoModel     string
 	GeminiVideoTimeout      time.Duration
 	GeminiVideoPoll         time.Duration
+	GIFs                    *gifs.Service
 	GeminiMusic             *gemini.Client
 	GeminiMusicModel        string
 	GeminiMusicOutputFormat string
@@ -128,6 +130,9 @@ func (s *Server) Handler() http.Handler {
 	}
 	mux.HandleFunc("GET /v1/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /v1/settings", s.handlePutSettings)
+	if s.GIFs != nil {
+		mux.HandleFunc("GET /v1/gifs/search", s.handleSearchGIFs)
+	}
 	mux.HandleFunc("POST /v1/agent/chat", s.handleChat)
 	mux.HandleFunc("GET /v1/sessions/{id}", s.handleGetSession)
 	mux.HandleFunc("DELETE /v1/sessions/{id}", s.handleDeleteSession)
@@ -139,6 +144,9 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /v1/projects/{id}/media/search", s.handleSearchMedia)
 		mux.HandleFunc("GET /v1/projects/{id}/media", s.handleListMedia)
 		mux.HandleFunc("POST /v1/projects/{id}/media/describe", s.handleDescribeMedia)
+		if s.GIFs != nil {
+			mux.HandleFunc("POST /v1/projects/{id}/gifs/import", s.handleImportGIF)
+		}
 		mux.HandleFunc("POST /v1/projects/{id}/export", s.handleExport)
 		mux.HandleFunc("GET /v1/projects/{id}/files/{path...}", s.handleProjectFile)
 		mux.HandleFunc("DELETE /v1/projects/{id}/files/{path...}", s.handleDeleteProjectFile)
@@ -294,6 +302,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			OnApplied:  func(rel string) { s.indexMedia(projectID, rel) },
 		})
 		tools.RegisterWeb(toolRegistry, tools.WebEnv{APIKey: s.ExaAPIKey, BaseURL: s.ExaBaseURL})
+		tools.RegisterGIFs(toolRegistry, tools.GIFEnv{
+			Service: s.GIFs, Projects: s.Projects, ProjectID: projectID,
+			OnMutation: timelineTx.MarkMediaMutation,
+			OnApplied:  func(rel string) { s.indexMedia(projectID, rel) },
+		})
 		tools.RegisterYouTube(toolRegistry, tools.YouTubeEnv{
 			Workspace: project.Dir, Bins: s.Bins, Timeout: s.YouTubeTimeout, MaxBytes: s.YouTubeMaxBytes, YTDLPBin: s.YouTubeYTDLPBin,
 			OnMutation: timelineTx.MarkMediaMutation,
