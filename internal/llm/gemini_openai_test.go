@@ -60,4 +60,12 @@ func TestEncodeStreamRequestGatesGeminiExtraBody(t *testing.T) {
 	if plain.ReasoningEffort != ThinkingEffortMedium {
 		t.Fatalf("reasoning_effort=%q", plain.ReasoningEffort)
 	}
+
+	none := gemini.encodeStreamRequest(Request{ReasoningEffort: ThinkingEffortNone})
+	if none.ExtraBody == nil || none.ExtraBody.Google.ThinkingConfig.IncludeThoughts {
+		t.Fatalf("gemini none should disable thought output: %#v", none.ExtraBody)
+	}
+	if got := none.ExtraBody.Google.ThinkingConfig.ThinkingLevel; got != "" {
+		t.Fatalf("gemini none should omit thinking_level, got %q", got)
+	}
 }

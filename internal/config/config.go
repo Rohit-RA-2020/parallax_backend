@@ -25,13 +25,17 @@ const (
 	defaultProfileID = "default"
 )
 
-// LLM is one OpenAI-compatible model endpoint.
+// LLM is one OpenAI-compatible endpoint. Config input may provide Models;
+// normalized runtime profiles always contain exactly one Model.
 type LLM struct {
-	ID      string `json:"id"`
-	Label   string `json:"label,omitempty"`
-	BaseURL string `json:"base_url"`
-	APIKey  string `json:"api_key"`
-	Model   string `json:"model"`
+	ID            string   `json:"id"`
+	Label         string   `json:"label,omitempty"`
+	BaseURL       string   `json:"base_url"`
+	APIKey        string   `json:"api_key"`
+	Model         string   `json:"model"`
+	Models        []string `json:"models,omitempty"`
+	ProviderID    string   `json:"-"`
+	ProviderLabel string   `json:"-"`
 }
 
 // Settings is the in-memory multi-model snapshot.
@@ -227,11 +231,13 @@ func Load() (Config, error) {
 
 // PublicProfile is the client-safe view of one configured model.
 type PublicProfile struct {
-	ID        string `json:"id"`
-	Label     string `json:"label,omitempty"`
-	BaseURL   string `json:"base_url"`
-	Model     string `json:"model"`
-	APIKeySet bool   `json:"api_key_set"`
+	ID            string `json:"id"`
+	Label         string `json:"label,omitempty"`
+	ProviderID    string `json:"provider_id"`
+	ProviderLabel string `json:"provider_label,omitempty"`
+	BaseURL       string `json:"base_url"`
+	Model         string `json:"model"`
+	APIKeySet     bool   `json:"api_key_set"`
 }
 
 // Public is the JSON shape returned to clients. API keys are never exposed.
@@ -245,11 +251,13 @@ type Public struct {
 
 func (l LLM) publicProfile() PublicProfile {
 	return PublicProfile{
-		ID:        l.ID,
-		Label:     l.Label,
-		BaseURL:   l.BaseURL,
-		Model:     l.Model,
-		APIKeySet: strings.TrimSpace(l.APIKey) != "",
+		ID:            l.ID,
+		Label:         l.Label,
+		ProviderID:    l.ProviderID,
+		ProviderLabel: l.ProviderLabel,
+		BaseURL:       l.BaseURL,
+		Model:         l.Model,
+		APIKeySet:     strings.TrimSpace(l.APIKey) != "",
 	}
 }
 
@@ -262,12 +270,12 @@ func (l LLM) public() Public {
 	}
 }
 
-// ValidateLLM checks that the three swap fields are usable.
+// ValidateLLM checks that the endpoint, credentials, and at least one model are usable.
 func ValidateLLM(l LLM) error {
 	if strings.TrimSpace(l.BaseURL) == "" {
 		return errors.New("base_url is required")
 	}
-	if strings.TrimSpace(l.Model) == "" {
+	if len(llmModelNames(l)) == 0 {
 		return errors.New("model is required")
 	}
 	if strings.TrimSpace(l.APIKey) == "" {
@@ -450,6 +458,7 @@ func LoadLLMProfiles() []LLM {
 				BaseURL: strings.TrimSpace(os.Getenv(prefix + "_BASE_URL")),
 				APIKey:  firstNonEmpty(os.Getenv(prefix+"_API_KEY"), os.Getenv(prefix+"_KEY")),
 				Model:   strings.TrimSpace(os.Getenv(prefix + "_MODEL")),
+				Models:  splitModelList(os.Getenv(prefix + "_MODELS")),
 			})
 		}
 		if len(out) > 0 {
@@ -457,11 +466,17 @@ func LoadLLMProfiles() []LLM {
 		}
 	}
 
+	fallbackModels := splitModelList(os.Getenv("LLM_MODEL_LIST"))
+	fallbackModel := strings.TrimSpace(os.Getenv("LLM_MODEL"))
+	if fallbackModel == "" && len(fallbackModels) == 0 {
+		fallbackModel = DefaultModel
+	}
 	return normalizeProfiles([]LLM{{
 		ID:      defaultProfileID,
 		BaseURL: envOr("LLM_BASE_URL", DefaultBaseURL),
 		APIKey:  firstNonEmpty(os.Getenv("LLM_API_KEY"), os.Getenv("XAI_API_KEY")),
-		Model:   envOr("LLM_MODEL", DefaultModel),
+		Model:   fallbackModel,
+		Models:  fallbackModels,
 	}})
 }
 
@@ -473,17 +488,44 @@ func normalizeProfiles(profiles []LLM) []LLM {
 		if i > 0 {
 			fallback = fmt.Sprintf("model-%d", i+1)
 		}
-		p := normalizeProfile(raw, fallback)
-		if p.ID == "" {
+		base := normalizeProfile(raw, fallback)
+		if base.ProviderID == "" {
+			base.ProviderID = base.ID
+		}
+		if base.ProviderLabel == "" {
+			base.ProviderLabel = base.Label
+		}
+		models := llmModelNames(base)
+		if len(models) == 0 {
+			out = appendUniqueProfile(out, seen, base, i)
 			continue
 		}
-		if seen[p.ID] {
-			p.ID = fmt.Sprintf("%s-%d", p.ID, i+1)
+		for _, model := range models {
+			p := base
+			p.Model = model
+			p.Models = nil
+			if len(models) > 1 {
+				p.ID = base.ID + ":" + model
+				if base.Label != "" {
+					p.Label = base.Label + " · " + model
+				}
+			}
+			out = appendUniqueProfile(out, seen, p, i)
 		}
-		seen[p.ID] = true
-		out = append(out, p)
 	}
 	return out
+}
+
+func appendUniqueProfile(out []LLM, seen map[string]bool, p LLM, index int) []LLM {
+	if p.ID == "" {
+		return out
+	}
+	baseID := p.ID
+	for suffix := index + 1; seen[p.ID]; suffix++ {
+		p.ID = fmt.Sprintf("%s-%d", baseID, suffix)
+	}
+	seen[p.ID] = true
+	return append(out, p)
 }
 
 func normalizeProfile(l LLM, fallbackID string) LLM {
@@ -495,7 +537,38 @@ func normalizeProfile(l LLM, fallbackID string) LLM {
 	l.BaseURL = strings.TrimRight(strings.TrimSpace(l.BaseURL), "/")
 	l.APIKey = strings.TrimSpace(l.APIKey)
 	l.Model = strings.TrimSpace(l.Model)
+	l.Models = splitModelList(strings.Join(l.Models, ","))
+	l.ProviderID = strings.TrimSpace(l.ProviderID)
+	l.ProviderLabel = strings.TrimSpace(l.ProviderLabel)
 	return l
+}
+
+func llmModelNames(l LLM) []string {
+	models := make([]string, 0, len(l.Models)+1)
+	seen := make(map[string]bool, len(l.Models)+1)
+	for _, model := range append([]string{l.Model}, l.Models...) {
+		model = strings.TrimSpace(model)
+		if model == "" || seen[model] {
+			continue
+		}
+		seen[model] = true
+		models = append(models, model)
+	}
+	return models
+}
+
+func splitModelList(raw string) []string {
+	var models []string
+	seen := make(map[string]bool)
+	for _, model := range strings.Split(raw, ",") {
+		model = strings.TrimSpace(model)
+		if model == "" || seen[model] {
+			continue
+		}
+		seen[model] = true
+		models = append(models, model)
+	}
+	return models
 }
 
 func envID(id string) string {

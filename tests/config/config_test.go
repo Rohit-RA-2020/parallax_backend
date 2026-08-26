@@ -30,6 +30,9 @@ func TestValidateLLM(t *testing.T) {
 	if err := ValidateLLM(LLM{BaseURL: DefaultBaseURL, APIKey: "k", Model: DefaultModel}); err != nil {
 		t.Fatal(err)
 	}
+	if err := ValidateLLM(LLM{BaseURL: DefaultBaseURL, APIKey: "k", Models: []string{"grok-4.6", "grok-4-fast"}}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestStoreSelectsEnvProfiles(t *testing.T) {
@@ -87,6 +90,31 @@ func TestGetByID(t *testing.T) {
 	}
 	if _, err := s.GetByID("missing"); err == nil {
 		t.Fatal("expected unknown id error")
+	}
+}
+
+func TestStoreExpandsModelsIntoSelectableProfiles(t *testing.T) {
+	s := NewStore(filepath.Join(t.TempDir(), "settings.json"), []LLM{{
+		ID:      "openai",
+		Label:   "OpenAI",
+		BaseURL: "https://api.openai.com/v1",
+		APIKey:  "sk-secret",
+		Models:  []string{"gpt-4.1", "gpt-4o"},
+	}})
+
+	snapshot := s.Snapshot()
+	if len(snapshot.Profiles) != 2 || snapshot.ActiveID != "openai:gpt-4.1" {
+		t.Fatalf("snapshot=%+v", snapshot)
+	}
+	if snapshot.Profiles[0].ProviderID != "openai" || snapshot.Profiles[0].ProviderLabel != "OpenAI" {
+		t.Fatalf("provider metadata=%+v", snapshot.Profiles[0])
+	}
+	selected, err := s.Select("openai:gpt-4o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.Model != "gpt-4o" || selected.APIKey != "sk-secret" || selected.BaseURL != "https://api.openai.com/v1" {
+		t.Fatalf("selected=%+v", selected)
 	}
 }
 
@@ -222,6 +250,55 @@ func TestLoadLLMProfilesFromJSON(t *testing.T) {
 	t.Setenv("LLM_PROFILES", `[{"id":"gemini","label":"Gemini","base_url":"https://generativelanguage.googleapis.com/v1beta/openai","model":"gemini-3.7-flash","api_key":"g-secret"}]`)
 	got := LoadLLMProfiles()
 	if len(got) != 1 || got[0].ID != "gemini" || got[0].APIKey != "g-secret" {
+		t.Fatalf("profiles=%+v", got)
+	}
+}
+
+func TestLoadLLMProfilesExpandsSharedCredentialsFromJSON(t *testing.T) {
+	t.Setenv("LLM_MODELS", "")
+	t.Setenv("LLM_PROFILES", `[{"id":"openai","label":"OpenAI","base_url":"https://api.openai.com/v1","models":["gpt-4.1","gpt-4o","gpt-4.1"],"api_key":"sk-secret"}]`)
+
+	got := LoadLLMProfiles()
+	if len(got) != 2 {
+		t.Fatalf("profiles=%+v", got)
+	}
+	if got[0].ID != "openai:gpt-4.1" || got[0].Label != "OpenAI · gpt-4.1" || got[0].Model != "gpt-4.1" {
+		t.Fatalf("first=%+v", got[0])
+	}
+	if got[0].ProviderID != "openai" || got[0].ProviderLabel != "OpenAI" {
+		t.Fatalf("first provider=%+v", got[0])
+	}
+	if got[1].ID != "openai:gpt-4o" || got[1].Label != "OpenAI · gpt-4o" || got[1].Model != "gpt-4o" {
+		t.Fatalf("second=%+v", got[1])
+	}
+	if got[0].BaseURL != got[1].BaseURL || got[0].APIKey != "sk-secret" || got[1].APIKey != "sk-secret" {
+		t.Fatalf("credentials were not shared: %+v", got)
+	}
+}
+
+func TestLoadLLMProfilesExpandsNamedModelList(t *testing.T) {
+	t.Setenv("LLM_PROFILES", "")
+	t.Setenv("LLM_MODELS", "groq")
+	t.Setenv("LLM_GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+	t.Setenv("LLM_GROQ_MODELS", "llama-3.3-70b, llama-3.1-8b")
+	t.Setenv("LLM_GROQ_API_KEY", "groq-secret")
+
+	got := LoadLLMProfiles()
+	if len(got) != 2 || got[0].Model != "llama-3.3-70b" || got[1].Model != "llama-3.1-8b" {
+		t.Fatalf("profiles=%+v", got)
+	}
+}
+
+func TestLoadLLMProfilesExpandsFallbackModelList(t *testing.T) {
+	t.Setenv("LLM_PROFILES", "")
+	t.Setenv("LLM_MODELS", "")
+	t.Setenv("LLM_MODEL", "")
+	t.Setenv("LLM_MODEL_LIST", "gpt-4.1, gpt-4o")
+	t.Setenv("LLM_BASE_URL", "https://api.openai.com/v1")
+	t.Setenv("LLM_API_KEY", "sk-secret")
+
+	got := LoadLLMProfiles()
+	if len(got) != 2 || got[0].Model != "gpt-4.1" || got[1].Model != "gpt-4o" {
 		t.Fatalf("profiles=%+v", got)
 	}
 }

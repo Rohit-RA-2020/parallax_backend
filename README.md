@@ -65,6 +65,29 @@ LLM_OPENAI_MODEL=gpt-4.1
 LLM_OPENAI_API_KEY=sk-…
 ```
 
+One endpoint and API key can expose several models. Use the plural `MODELS`
+field and each model will appear separately in the editor's model picker while
+sharing the same credentials:
+
+```bash
+LLM_MODELS=openai
+LLM_OPENAI_LABEL=OpenAI
+LLM_OPENAI_BASE_URL=https://api.openai.com/v1
+LLM_OPENAI_MODELS=gpt-4.1,gpt-4o,o3
+LLM_OPENAI_API_KEY=sk-…
+```
+
+The JSON form supports the same grouping:
+
+```bash
+LLM_PROFILES='[{"id":"openai","label":"OpenAI","base_url":"https://api.openai.com/v1","api_key":"sk-…","models":["gpt-4.1","gpt-4o","o3"]}]'
+```
+
+Grouped entries are exposed by `GET /v1/settings` with IDs such as
+`openai:gpt-4.1` plus explicit provider metadata. The editor uses that metadata
+for separate provider and model selectors; the generated IDs continue to work
+with the settings and chat APIs.
+
 To enable Director web search, set `EXA_API_KEY` in the backend environment.
 The server keeps the key private and exposes a `search_web` function to
 Director. It uses Exa's `/search` endpoint, defaults to compact highlights,
@@ -137,10 +160,14 @@ If `LLM_MODELS` is unset, the original single-model vars still work:
 | `api_key`  | `LLM_API_KEY` (or `XAI_API_KEY`) | _(empty)_ |
 | `model`    | `LLM_MODEL`    | `grok-4.6`              |
 
+For a single endpoint without named profiles, `LLM_MODEL_LIST` accepts the
+same comma-separated model list. `LLM_MODEL` remains supported for existing
+single-model configurations.
+
 `GET /v1/settings` lists the env-defined models (keys are never returned).
 `PUT /v1/settings` with `{"active_id":"openai"}` switches the active one.
 `POST /v1/agent/chat` accepts optional `profile_id` for that turn.
-It also accepts optional `thinking_effort` (`low`, `medium`, or `high`;
+It also accepts optional `thinking_effort` (`none`, `low`, `medium`, or `high`;
 defaults to `medium`) and forwards it as the provider's `reasoning_effort`.
 
 Examples of other providers (same three fields):

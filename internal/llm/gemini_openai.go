@@ -76,6 +76,13 @@ func geminiThinkingFor(model string, effort ThinkingEffort) geminiThinkingConfig
 	if effort == "" {
 		effort = DefaultThinkingEffort
 	}
+	if effort == ThinkingEffortNone {
+		// "none" is supported by OpenAI-compatible providers as a literal
+		// reasoning_effort value. Gemini uses a different thinking_config
+		// schema, so omit an explicit level/budget and disable thought output.
+		cfg.IncludeThoughts = false
+		return cfg
+	}
 	if geminiUsesBudget(model) {
 		budget := geminiBudgetFor(effort)
 		cfg.ThinkingBudget = &budget

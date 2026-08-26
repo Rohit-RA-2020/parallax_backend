@@ -91,6 +91,7 @@ type Usage struct {
 type ThinkingEffort string
 
 const (
+	ThinkingEffortNone   ThinkingEffort = "none"
 	ThinkingEffortLow    ThinkingEffort = "low"
 	ThinkingEffortMedium ThinkingEffort = "medium"
 	ThinkingEffortHigh   ThinkingEffort = "high"
@@ -102,6 +103,8 @@ func NormalizeThinkingEffort(value string) (ThinkingEffort, error) {
 	switch ThinkingEffort(strings.ToLower(strings.TrimSpace(value))) {
 	case "":
 		return DefaultThinkingEffort, nil
+	case ThinkingEffortNone:
+		return ThinkingEffortNone, nil
 	case ThinkingEffortLow:
 		return ThinkingEffortLow, nil
 	case ThinkingEffortMedium:
@@ -109,7 +112,7 @@ func NormalizeThinkingEffort(value string) (ThinkingEffort, error) {
 	case ThinkingEffortHigh:
 		return ThinkingEffortHigh, nil
 	default:
-		return "", fmt.Errorf("thinking_effort must be low, medium, or high")
+		return "", fmt.Errorf("thinking_effort must be none, low, medium, or high")
 	}
 }
 
