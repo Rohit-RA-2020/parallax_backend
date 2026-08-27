@@ -1,6 +1,7 @@
 package projects
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -289,10 +290,6 @@ func (s *Store) FinalizeUpload(id, originalName, source string) (Media, error) {
 }
 
 func (s *Store) SaveChatImage(id, originalName, mime string, data []byte) (llm.ImageRef, error) {
-	p, err := s.Get(id)
-	if err != nil {
-		return llm.ImageRef{}, err
-	}
 	if !llm.LooksLikeImage(data) {
 		return llm.ImageRef{}, errors.New("file is not a readable image")
 	}
@@ -308,22 +305,14 @@ func (s *Store) SaveChatImage(id, originalName, mime string, data []byte) (llm.I
 	if ext == "" || kindForExt(ext) != "image" {
 		name = strings.TrimSuffix(name, ext) + want
 	}
-	dir := filepath.Join(p.Dir, ".parallax", "chat-media")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return llm.ImageRef{}, err
-	}
-	dst := availablePath(dir, name)
-	if err := os.WriteFile(dst, data, 0o600); err != nil {
-		return llm.ImageRef{}, err
-	}
-	rel, err := filepath.Rel(p.Dir, dst)
+	media, err := s.SaveUpload(id, name, bytes.NewReader(data))
 	if err != nil {
 		return llm.ImageRef{}, err
 	}
 	return llm.ImageRef{
-		Path: filepath.ToSlash(rel),
+		Path: media.Path,
 		MIME: mime,
-		Name: filepath.Base(dst),
+		Name: media.Name,
 	}, nil
 }
 

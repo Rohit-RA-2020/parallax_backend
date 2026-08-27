@@ -36,19 +36,20 @@ const (
 // ImageEnv is the server-side configuration for Gemini image generation.
 // API keys never enter tool arguments or tool results.
 type ImageEnv struct {
-	Workspace  string
-	APIKey     string
-	BaseURL    string
-	Model      string
-	Client     *http.Client
-	OnMutation func()
-	OnApplied  func(rel, prompt string)
+	Workspace     string
+	APIKey        string
+	BaseURL       string
+	Model         string
+	DefaultImages []string
+	Client        *http.Client
+	OnMutation    func()
+	OnApplied     func(rel, prompt string)
 }
 
 func RegisterImage(reg *Registry, env ImageEnv) {
 	reg.Register(llm.NewFunctionTool(
 		"generate_image",
-		"Generate or edit a still with Gemini and save it into the project bin under media/. For a new picture, pass only a detailed prompt. To edit an uploaded or previously generated still, pass source (or images) with the workspace path plus an edit prompt — the source bytes are sent to Gemini with the instructions. A single source is replaced in place so the bin and timeline update; pass apply_to \"none\" to keep a separate variant. Additional images can be mixed in as references. New and edited stills are described and indexed for search_images. Then call place_media only when a new file should go on the timeline.",
+		"Generate or edit a still with Gemini and save it into the project bin under media/. For a new picture, pass only a detailed prompt. To edit an uploaded or previously generated still, pass source (or images) with the workspace path plus an edit prompt — the source bytes are sent to Gemini with the instructions. If the user attached an image in the current chat, it is available automatically when source/images are omitted. A single source is replaced in place so the bin and timeline update; pass apply_to \"none\" to keep a separate variant. Additional images can be mixed in as references. New and edited stills are described and indexed for search_images. Then call place_media only when a new file should go on the timeline.",
 		json.RawMessage(`{
 			"type":"object",
 			"properties":{
@@ -108,6 +109,12 @@ func (e ImageEnv) generateImage(ctx context.Context, raw json.RawMessage) Result
 	paths, primary, err := parseImageRefArgs(in.Source, in.Path, in.Image, in.Images)
 	if err != nil {
 		return Result{OK: false, Error: err.Error()}
+	}
+	if len(paths) == 0 {
+		paths = append([]string(nil), e.DefaultImages...)
+		if len(paths) > 0 {
+			primary = paths[0]
+		}
 	}
 	refs, err := e.loadImageRefs(paths)
 	if err != nil {

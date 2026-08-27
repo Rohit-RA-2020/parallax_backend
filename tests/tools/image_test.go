@@ -1,6 +1,7 @@
 package tools_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -95,6 +96,52 @@ func TestGenerateImageWritesBinFile(t *testing.T) {
 	}
 	if len(data) < 3 || data[0] != 0xff || data[1] != 0xd8 {
 		t.Fatalf("saved file is not a JPEG: %d bytes", len(data))
+	}
+}
+
+func TestGenerateImageUsesDefaultChatAttachmentBytes(t *testing.T) {
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"output_image":{"type":"image","mime_type":"image/jpeg","data":"` + tinyJPEG + `"}}`))
+	}))
+	defer server.Close()
+
+	ws := t.TempDir()
+	raw := decodeTinyJPEG(t)
+	if err := os.MkdirAll(filepath.Join(ws, "media"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "media", "chat-reference.jpg"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := NewRegistry()
+	RegisterImage(reg, ImageEnv{
+		Workspace:     ws,
+		APIKey:        "k",
+		BaseURL:       server.URL,
+		DefaultImages: []string{"media/chat-reference.jpg"},
+	})
+	res := reg.Execute(context.Background(), "generate_image", `{"prompt":"keep the subject exactly, only change the background"}`)
+	if !res.OK {
+		t.Fatal(res.Error)
+	}
+	input := gotBody["input"].([]any)
+	if len(input) != 2 {
+		t.Fatalf("input=%#v", gotBody["input"])
+	}
+	imagePart := input[1].(map[string]any)
+	encoded := imagePart["data"].(string)
+	got, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, raw) {
+		t.Fatal("default chat attachment bytes were changed before generation")
 	}
 }
 

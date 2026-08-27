@@ -146,8 +146,25 @@ func TestChatAcceptsAttachedImage(t *testing.T) {
 	if user.Content != "match this look" || len(user.Images) != 1 || user.Images[0].Data == "" {
 		t.Fatalf("user=%+v", user)
 	}
+	if !strings.HasPrefix(user.Images[0].Path, "media/") {
+		t.Fatalf("attachment was not promoted to the media bin: %q", user.Images[0].Path)
+	}
 	if _, err := os.Stat(filepath.Join(project.Dir, filepath.FromSlash(user.Images[0].Path))); err != nil {
 		t.Fatal(err)
+	}
+	media, err := s.Projects.ListMedia(project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range media {
+		if item.Path == user.Images[0].Path {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("attachment %q is not visible in the media bin", user.Images[0].Path)
 	}
 }
 

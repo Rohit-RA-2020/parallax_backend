@@ -41,6 +41,9 @@ func encodeVisionContent(m Message) (json.RawMessage, bool) {
 		}
 		parts = append(parts, map[string]any{"type": "text", "text": m.Content})
 	}
+	if hint := imagePathHint(m.Images); hint != "" {
+		parts = append(parts, map[string]any{"type": "text", "text": hint})
+	}
 	for _, img := range m.Images {
 		url := imageDataURL(img)
 		if url == "" {
@@ -66,6 +69,25 @@ func encodeVisionContent(m Message) (json.RawMessage, bool) {
 		return nil, false
 	}
 	return raw, true
+}
+
+func imagePathHint(images []ImageRef) string {
+	paths := make([]string, 0, len(images))
+	for _, img := range images {
+		if path := strings.TrimSpace(img.Path); path != "" {
+			paths = append(paths, path)
+		}
+	}
+	if len(paths) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Attached image workspace paths (use these exact paths as source or reference inputs for generation tools):")
+	for _, path := range paths {
+		b.WriteString("\n- ")
+		b.WriteString(path)
+	}
+	return b.String()
 }
 
 func imageDataURL(img ImageRef) string {

@@ -272,6 +272,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, attachErr.Error())
 		return
 	}
+	attachedPaths := make([]string, 0, len(attached))
+	for _, image := range attached {
+		if path := strings.TrimSpace(image.Path); path != "" {
+			attachedPaths = append(attachedPaths, path)
+			s.indexMedia(projectID, path)
+		}
+	}
 	var timelineTx *projects.TimelineTransaction
 	if projectID != "" {
 		if s.Projects == nil {
@@ -313,23 +320,25 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			OnApplied:  func(rel string) { s.indexMedia(projectID, rel) },
 		})
 		tools.RegisterImage(toolRegistry, tools.ImageEnv{
-			Workspace:  project.Dir,
-			APIKey:     s.GeminiAPIKey,
-			BaseURL:    s.GeminiBaseURL,
-			Model:      s.GeminiImageModel,
-			OnMutation: timelineTx.MarkMediaMutation,
-			OnApplied:  func(rel, prompt string) { s.indexGeneratedImage(projectID, rel, prompt) },
+			Workspace:     project.Dir,
+			APIKey:        s.GeminiAPIKey,
+			BaseURL:       s.GeminiBaseURL,
+			Model:         s.GeminiImageModel,
+			DefaultImages: attachedPaths,
+			OnMutation:    timelineTx.MarkMediaMutation,
+			OnApplied:     func(rel, prompt string) { s.indexGeneratedImage(projectID, rel, prompt) },
 		})
 		videoClient := gemini.NewClient(s.GeminiAPIKey, s.GeminiBaseURL, s.GeminiVideoTimeout, 256<<20)
 		tools.RegisterVideoGeneration(toolRegistry, tools.VideoGenerationEnv{
-			Workspace:  project.Dir,
-			Bins:       s.Bins,
-			Client:     videoClient,
-			OmniModel:  s.GeminiOmniVideoModel,
-			VeoModel:   s.GeminiVeoVideoModel,
-			Poll:       s.GeminiVideoPoll,
-			OnMutation: timelineTx.MarkMediaMutation,
-			OnApplied:  func(rel string) { s.indexMedia(projectID, rel) },
+			Workspace:     project.Dir,
+			Bins:          s.Bins,
+			Client:        videoClient,
+			OmniModel:     s.GeminiOmniVideoModel,
+			VeoModel:      s.GeminiVeoVideoModel,
+			DefaultImages: attachedPaths,
+			Poll:          s.GeminiVideoPoll,
+			OnMutation:    timelineTx.MarkMediaMutation,
+			OnApplied:     func(rel string) { s.indexMedia(projectID, rel) },
 		})
 		tools.RegisterAudioGeneration(toolRegistry, tools.AudioGenerationEnv{
 			Workspace: project.Dir, Bins: s.Bins, Client: s.ElevenLabs, Voices: s.ElevenVoices,

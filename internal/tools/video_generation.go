@@ -18,20 +18,21 @@ import (
 const maxVideoInputBytes = 64 << 20
 
 type VideoGenerationEnv struct {
-	Workspace  string
-	Bins       ffmpeg.Bins
-	Client     *gemini.Client
-	OmniModel  string
-	VeoModel   string
-	Poll       time.Duration
-	OnMutation func()
-	OnApplied  func(rel string)
+	Workspace     string
+	Bins          ffmpeg.Bins
+	Client        *gemini.Client
+	OmniModel     string
+	VeoModel      string
+	DefaultImages []string
+	Poll          time.Duration
+	OnMutation    func()
+	OnApplied     func(rel string)
 }
 
 func RegisterVideoGeneration(reg *Registry, env VideoGenerationEnv) {
 	reg.Register(llm.NewFunctionTool(
 		"generate_video",
-		"Generate or edit a video with Gemini and save it into the project media bin. The tool automatically chooses Gemini Omni Flash for normal, fast, multimodal generation and conversational edits, or standard Veo 3.1 for cinematic/high-fidelity requests, explicit duration/resolution, reference-image control, first/last-frame interpolation, and extension. Provide task as text_to_video, image_to_video, reference_to_video, edit, extend, or interpolate when the intent is clear. Generated videos are indexed automatically; call place_media only when the user asks to put the result on the timeline.",
+		"Generate or edit a video with Gemini and save it into the project media bin. The tool automatically chooses Gemini Omni Flash for normal, fast, multimodal generation and conversational edits, or standard Veo 3.1 for cinematic/high-fidelity requests, explicit duration/resolution, reference-image control, first/last-frame interpolation, and extension. If the user attached an image in the current chat, it is used automatically as the source when source is omitted. Provide task as text_to_video, image_to_video, reference_to_video, edit, extend, or interpolate when the intent is clear. Generated videos are indexed automatically; call place_media only when the user asks to put the result on the timeline.",
 		json.RawMessage(`{
 			"type":"object",
 			"properties":{
@@ -82,6 +83,9 @@ func (e VideoGenerationEnv) generateVideo(ctx context.Context, raw json.RawMessa
 
 	source := strings.TrimSpace(in.Source)
 	task := strings.ToLower(strings.TrimSpace(in.Task))
+	if source == "" && task != "edit" && task != "extend" && len(e.DefaultImages) > 0 {
+		source = strings.TrimSpace(e.DefaultImages[0])
+	}
 	if task == "" {
 		switch {
 		case strings.TrimSpace(in.PreviousInteractionID) != "":

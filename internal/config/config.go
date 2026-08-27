@@ -145,7 +145,7 @@ func Load() (Config, error) {
 		GeminiImageModel:           envOr("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image"),
 		GeminiMusicModel:           envOr("GEMINI_MUSIC_MODEL", "lyria-3-pro-preview"),
 		GeminiMusicOutputFormat:    envOr("GEMINI_MUSIC_OUTPUT_FORMAT", "mp3"),
-		GeminiOmniVideoModel:       envOr("GEMINI_OMNI_VIDEO_MODEL", "gemini-omni-flash-preview"),
+		GeminiOmniVideoModel:       envOr("GEMINI_OMNI_VIDEO_MODEL", "gemini-omni-1.1-flash"),
 		GeminiVeoVideoModel:        envOr("GEMINI_VEO_VIDEO_MODEL", "veo-3.1-generate-preview"),
 		GeminiVideoTimeout:         time.Duration(envInt("GEMINI_VIDEO_TIMEOUT_SECONDS", 900)) * time.Second,
 		GeminiVideoPoll:            time.Duration(envInt("GEMINI_VIDEO_POLL_SECONDS", 5)) * time.Second,

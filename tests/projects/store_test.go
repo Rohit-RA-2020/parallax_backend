@@ -1,6 +1,7 @@
 package projects_test
 
 import (
+	"bytes"
 	"encoding/base64"
 	"errors"
 	"os"
@@ -237,7 +238,7 @@ func TestResolveFileRejectsSymlink(t *testing.T) {
 	}
 }
 
-func TestSaveChatImagePersistsUnderChatMedia(t *testing.T) {
+func TestSaveChatImagePromotesLosslesslyIntoMediaBin(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -254,19 +255,30 @@ func TestSaveChatImagePersistsUnderChatMedia(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(img.Path, ".parallax/chat-media/") {
+	if !strings.HasPrefix(img.Path, "media/") {
 		t.Fatalf("path=%s", img.Path)
 	}
 	if _, err := store.ResolveFile(p.ID, img.Path); err != nil {
 		t.Fatal(err)
 	}
+	stored, err := os.ReadFile(filepath.Join(p.Dir, filepath.FromSlash(img.Path)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stored, raw) {
+		t.Fatal("chat image was changed while promoting it to the bin")
+	}
 	media, err := store.ListMedia(p.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	found := false
 	for _, item := range media {
 		if item.Path == img.Path {
-			t.Fatal("chat image leaked into the bin")
+			found = true
 		}
+	}
+	if !found {
+		t.Fatal("promoted chat image is missing from the bin")
 	}
 }

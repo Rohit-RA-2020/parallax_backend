@@ -1,6 +1,19 @@
 package tools
 
-import "testing"
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"parallax/internal/gemini"
+)
 
 func TestChooseVideoProvider(t *testing.T) {
 	tests := []struct {
@@ -44,5 +57,59 @@ func TestChooseVideoProviderValidatesSpecialTasks(t *testing.T) {
 	}
 	if _, err := chooseVideoProvider("interpolate", "", false, false, 0, 0, ""); err == nil {
 		t.Fatal("expected missing last frame error")
+	}
+}
+
+func TestGenerateVideoUsesDefaultChatAttachmentBytes(t *testing.T) {
+	rawImage := []byte{0x89, 0x50, 0x4e, 0x47, 0x00, 0xff}
+	rawVideo := []byte("video-bytes")
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/interactions" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "interaction-1",
+			"steps": []any{map[string]any{
+				"content": []any{map[string]any{
+					"type": "video", "mime_type": "video/mp4",
+					"data": base64.StdEncoding.EncodeToString(rawVideo),
+				}},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	workspace := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspace, "media"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "media", "chat-reference.png"), rawImage, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg := NewRegistry()
+	RegisterVideoGeneration(reg, VideoGenerationEnv{
+		Workspace:     workspace,
+		Client:        gemini.NewClient("k", server.URL, time.Second, 1<<20),
+		DefaultImages: []string{"media/chat-reference.png"},
+	})
+	res := reg.Execute(context.Background(), "generate_video", `{"prompt":"animate this exact image with a slow camera move"}`)
+	if !res.OK {
+		t.Fatal(res.Error)
+	}
+	input := gotBody["input"].([]any)
+	if len(input) != 2 {
+		t.Fatalf("input=%#v", gotBody["input"])
+	}
+	imagePart := input[0].(map[string]any)
+	got, err := base64.StdEncoding.DecodeString(imagePart["data"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, rawImage) {
+		t.Fatal("default chat attachment bytes were changed before video generation")
 	}
 }
