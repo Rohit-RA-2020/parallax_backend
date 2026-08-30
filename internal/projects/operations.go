@@ -454,7 +454,7 @@ func (tx *TimelineTransaction) Commit() (Timeline, bool, error) {
 		return tx.doc, false, nil
 	}
 	doc, err := tx.store.saveTimelineCommit(tx.projectID, tx.doc, tx.baseRevision, tx.meta, tx.mediaDirty)
-	if err != nil && tx.mediaDirty {
+	if err != nil && tx.mediaDirty && !tx.store.IsPostgres() {
 		if p, getErr := tx.store.Get(tx.projectID); getErr == nil {
 			current, _ := snapshotMedia(p, tx.baseMedia)
 			_ = restoreMedia(p, tx.baseMedia, current)
@@ -486,7 +486,7 @@ func (tx *TimelineTransaction) SetChatID(chatID string) {
 
 func (tx *TimelineTransaction) Rollback() {
 	tx.mu.Lock()
-	if tx.mediaDirty {
+	if tx.mediaDirty && !tx.store.IsPostgres() {
 		if p, err := tx.store.Get(tx.projectID); err == nil {
 			current, _ := snapshotMedia(p, tx.baseMedia)
 			_ = restoreMedia(p, tx.baseMedia, current)

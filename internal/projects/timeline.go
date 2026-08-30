@@ -304,21 +304,6 @@ func (s *Store) savePGTimelineCommit(ctx context.Context, projectID string, doc 
 	if err != nil {
 		return Timeline{}, err
 	}
-	// Compatibility clients may still submit media_path. Resolve it once at
-	// commit time and persist the stable asset UUID required by schema v3.
-	for i := range normalized.Clips {
-		clip := &normalized.Clips[i]
-		if clip.AssetID != "" || strings.TrimSpace(clip.MediaPath) == "" {
-			continue
-		}
-		err = s.pg.QueryRow(ctx, `SELECT id FROM assets WHERE project_id=$1 AND logical_path=$2 AND deleted_at IS NULL`, projectID, filepath.ToSlash(clip.MediaPath)).Scan(&clip.AssetID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Timeline{}, fmt.Errorf("%w: clip %q references unknown asset", ErrInvalidTimeline, clip.ID)
-		}
-		if err != nil {
-			return Timeline{}, err
-		}
-	}
 	tx, err := s.pg.Begin(ctx)
 	if err != nil {
 		return Timeline{}, err
@@ -347,6 +332,15 @@ func (s *Store) savePGTimelineCommit(ctx context.Context, projectID string, doc 
 		if err = s.syncPGWorkspace(ctx, tx, project); err != nil {
 			return Timeline{}, err
 		}
+	}
+	// Generated and edited files only become assets when the workspace is
+	// synchronized above. Resolve compatibility media paths after that import,
+	// using the same transaction, so a clip can reference an asset created by
+	// the current Director turn. Stable asset IDs are checked here as well to
+	// prevent foreign, deleted, or otherwise stale references entering a
+	// revision document.
+	if err = resolvePGTimelineAssets(ctx, tx, projectID, &normalized); err != nil {
+		return Timeline{}, err
 	}
 	var next int64
 	if err = tx.QueryRow(ctx, `SELECT COALESCE(max(revision_no),-1)+1 FROM project_revisions WHERE project_id=$1`, projectID).Scan(&next); err != nil {
@@ -377,6 +371,37 @@ func (s *Store) savePGTimelineCommit(ctx context.Context, projectID string, doc 
 		return Timeline{}, err
 	}
 	return normalized, nil
+}
+
+func resolvePGTimelineAssets(ctx context.Context, q pgQuerier, projectID string, doc *Timeline) error {
+	for i := range doc.Clips {
+		clip := &doc.Clips[i]
+		rawAssetID := strings.TrimSpace(clip.AssetID)
+		mediaPath := filepath.ToSlash(strings.TrimSpace(clip.MediaPath))
+		if rawAssetID == "" && mediaPath == "" {
+			continue
+		}
+
+		var resolved uuid.UUID
+		var err error
+		if rawAssetID != "" {
+			assetID, parseErr := uuid.Parse(rawAssetID)
+			if parseErr != nil {
+				return fmt.Errorf("%w: clip %q references unknown asset", ErrInvalidTimeline, clip.ID)
+			}
+			err = q.QueryRow(ctx, `SELECT id FROM assets WHERE project_id=$1 AND id=$2 AND deleted_at IS NULL`, projectID, assetID).Scan(&resolved)
+		} else {
+			err = q.QueryRow(ctx, `SELECT id FROM assets WHERE project_id=$1 AND logical_path=$2 AND deleted_at IS NULL`, projectID, mediaPath).Scan(&resolved)
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: clip %q references unknown asset", ErrInvalidTimeline, clip.ID)
+		}
+		if err != nil {
+			return err
+		}
+		clip.AssetID = resolved.String()
+	}
+	return nil
 }
 
 func timelinePath(p Project) string {

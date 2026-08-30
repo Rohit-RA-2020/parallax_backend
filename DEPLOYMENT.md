@@ -44,10 +44,25 @@ PARALLAX_REPO=https://github.com/Rohit-RA-2020/parallax_backend.git \
   ./scripts/bootstrap-vm.sh
 ```
 
-The script installs Docker when necessary, generates the PostgreSQL password and
-media-cookie secret without printing them, and starts PostgreSQL 18.6 and Qdrant
-1.15.4. It starts the backend once required Supabase settings are present in
-`.env`. PostgreSQL and Qdrant have no host-published ports.
+The script installs Docker when necessary, generates the PostgreSQL password,
+Qdrant API key, and media-cookie secret without printing them, and starts
+PostgreSQL 18.6 and Qdrant 1.15.4. It starts the backend once required Supabase
+settings are present in `.env`.
+
+Compose publishes the backend, PostgreSQL, and Qdrant on every host interface:
+
+- Backend HTTP: `0.0.0.0:${PARALLAX_PORT:-8080}`
+- PostgreSQL: `0.0.0.0:${POSTGRES_PORT:-5432}`
+- Qdrant REST: `0.0.0.0:${QDRANT_HTTP_PORT:-6333}`
+- Qdrant gRPC: `0.0.0.0:${QDRANT_GRPC_PORT:-6334}`
+
+PostgreSQL requires its SCRAM-protected `parallax` password and Qdrant requires
+the `QDRANT_API_KEY` header. The backend continues to use the private Compose
+network names. Publishing a port is not a firewall policy: allow these database
+ports only from trusted administration or application IPs. Do not expose them
+unrestricted to the public Internet. PostgreSQL is not configured with TLS by
+this Compose file, so remote access should traverse a private network, VPN, or
+SSH tunnel.
 
 After editing `.env`, apply it with `docker compose up -d --build backend`.
 Check liveness at `/health/live` and dependency readiness at `/health/ready`.

@@ -79,11 +79,12 @@ set_env() {
 }
 
 if ! grep -q '^POSTGRES_PASSWORD=[0-9a-f]\{64,\}$' "$PARALLAX_DIR/.env"; then set_env POSTGRES_PASSWORD "$(random_hex)"; fi
+if ! grep -q '^QDRANT_API_KEY=[0-9a-f]\{64,\}$' "$PARALLAX_DIR/.env"; then set_env QDRANT_API_KEY "$(random_hex)"; fi
 if ! grep -q '^MEDIA_COOKIE_SECRET=[0-9a-f]\{64,\}$' "$PARALLAX_DIR/.env"; then set_env MEDIA_COOKIE_SECRET "$(random_hex)"; fi
 set_env POSTGRES_IMAGE "$POSTGRES_IMAGE"
 set_env QDRANT_IMAGE "$QDRANT_IMAGE"
 set_env PARALLAX_IMAGE "$PARALLAX_IMAGE"
-for key in SUPABASE_URL SUPABASE_JWKS_URL SUPABASE_ISSUER SUPABASE_AUDIENCE PARALLAX_ALLOWED_ORIGINS; do
+for key in SUPABASE_URL SUPABASE_JWKS_URL SUPABASE_ISSUER SUPABASE_AUDIENCE PARALLAX_ALLOWED_ORIGINS POSTGRES_PORT QDRANT_HTTP_PORT QDRANT_GRPC_PORT PARALLAX_PORT; do
   if [[ -n "${!key:-}" ]]; then set_env "$key" "${!key}"; fi
 done
 
@@ -119,7 +120,11 @@ Then apply changes with:
   cd '${PARALLAX_DIR}' && ${DCMD} compose ${COMPOSE_ARGS[*]} up -d
 
 When credentials are complete, the API will be available at http://localhost:8080.
-PostgreSQL and Qdrant are intentionally not published on host ports.
+PostgreSQL listens on 0.0.0.0:${POSTGRES_PORT:-5432}; Qdrant REST listens on
+0.0.0.0:${QDRANT_HTTP_PORT:-6333} and gRPC on 0.0.0.0:${QDRANT_GRPC_PORT:-6334}.
+Both require the randomly generated credentials stored in ${PARALLAX_DIR}/.env.
+Restrict these ports to trusted source IPs with the VM firewall; neither service
+should be exposed unrestricted to the public Internet.
 
 No automated backup is configured. Protect both the parallax_postgres and
 parallax_media volumes with VM snapshots or an external backup process before

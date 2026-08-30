@@ -240,23 +240,27 @@ cp .env.example .env   # then put a key in LLM_API_KEY or XAI_API_KEY
 go run ./cmd/server
 ```
 
-### Docker deployment (backend only)
+### Docker deployment
 
 On an Ubuntu or Debian host, the bootstrap installs Docker if needed, clones
-or updates this repository, builds the backend image, and provisions Qdrant
-plus persistent Docker volumes:
+or updates this repository, builds the backend image, and provisions
+PostgreSQL, Qdrant, and persistent Docker volumes:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Rohit-RA-2020/parallax_backend/main/scripts/bootstrap-vm.sh | bash
 ```
 
-When it finishes, edit the generated `~/parallax_backend/.env` and run the
-detached `docker run` command printed by the script. The image includes the Go
-server, FFmpeg, fonts, Python, and faster-whisper; it does not include or serve
-the frontend. On hosts with the NVIDIA Container Runtime, the printed command
-automatically includes `--gpus all`. Qdrant is published on `0.0.0.0:6333` for
-network access; restrict that port to trusted client IPs in the host firewall or
-cloud security group because Qdrant is unauthenticated by default.
+When it finishes, edit the generated `~/parallax_backend/.env` and apply it with
+`docker compose up -d --build`. The image includes the Go server, FFmpeg, fonts,
+Python, and faster-whisper; it does not include or serve the frontend. On hosts
+with the NVIDIA Container Runtime, Compose automatically enables the GPU.
+
+Compose publishes the backend on `0.0.0.0:8080`, PostgreSQL on
+`0.0.0.0:5432`, Qdrant REST on `0.0.0.0:6333`, and Qdrant gRPC on
+`0.0.0.0:6334` by default. PostgreSQL uses its generated SCRAM password and
+Qdrant requires the generated API key. Restrict the database ports to trusted
+client IPs in the host firewall or cloud security group. See
+[DEPLOYMENT.md](DEPLOYMENT.md) for remote-access and TLS limitations.
 
 Create projects from the frontend and upload media there. Each project gets an
 isolated directory under `./workspace/projects/<project-id>`; Director tools are
