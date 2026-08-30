@@ -33,6 +33,64 @@ type fakeProvider struct {
 	seen   *llm.Request
 }
 
+type parallelTitleProvider struct {
+	titleStarted chan llm.Request
+	answerStart  chan struct{}
+}
+
+func (p *parallelTitleProvider) Complete(_ context.Context, req llm.Request) (string, error) {
+	p.titleStarted <- req
+	<-p.answerStart
+	return `"Mute Highway Audio."`, nil
+}
+
+func (p *parallelTitleProvider) Stream(_ context.Context, _ llm.Request) (<-chan llm.Delta, error) {
+	select {
+	case req := <-p.titleStarted:
+		if req.ReasoningEffort != llm.ThinkingEffortLow {
+			return nil, errors.New("title request did not use low reasoning")
+		}
+	case <-time.After(time.Second):
+		return nil, errors.New("title request was not started in parallel")
+	}
+	close(p.answerStart)
+	ch := make(chan llm.Delta, 1)
+	ch <- llm.Delta{Content: "Done", FinishReason: "stop"}
+	close(ch)
+	return ch, nil
+}
+
+func TestFirstMessageGeneratesAndPersistsChatTitleInParallel(t *testing.T) {
+	provider := &parallelTitleProvider{titleStarted: make(chan llm.Request, 1), answerStart: make(chan struct{})}
+	s := testServer(t, provider)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	project, err := s.Projects.Create("Titles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(ts.URL+"/v1/agent/chat", "application/json", strings.NewReader(`{"project_id":"`+project.ID+`","message":"Please mute the highway clip audio"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("%s %s", resp.Status, raw)
+	}
+	if !bytes.Contains(raw, []byte(`event: chat_title`)) || !bytes.Contains(raw, []byte(`Mute Highway Audio`)) {
+		t.Fatalf("missing generated title event: %s", raw)
+	}
+	chats, err := s.Projects.ListChats(project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chats) != 1 || chats[0].Title != "Mute Highway Audio" {
+		t.Fatalf("chats=%+v", chats)
+	}
+}
+
 func (f fakeProvider) Stream(_ context.Context, req llm.Request) (<-chan llm.Delta, error) {
 	if f.seen != nil {
 		*f.seen = req

@@ -635,6 +635,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var sess *agent.Session
+	var titleResult <-chan string
 	if projectID != "" {
 		chat, err := s.Projects.GetOrCreateChat(projectID, strings.TrimSpace(req.SessionID))
 		if err != nil {
@@ -648,6 +649,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			UpdatedAt: chat.UpdatedAt,
 		}
 		s.Sessions.Remember(sess)
+		if isFirstChatMessage(chat.Messages) && isDefaultGeneratedTitle(chat.Title) && (userText != "" || len(attached) > 0) {
+			seed := userText
+			if seed == "" && len(attached) > 0 {
+				seed = "Attached image: " + attached[0].Name
+			}
+			titleResult = s.generateChatTitle(r.Context(), llmCfg, seed)
+		}
 	} else {
 		sess = s.Sessions.GetOrCreateForProject(req.SessionID, "")
 	}
@@ -727,6 +735,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = stream.Event(ev)
 	})
+	if titleResult != nil {
+		if title := <-titleResult; title != "" {
+			if renamed, renameErr := s.Projects.RenameChat(projectID, sess.ID, title); renameErr != nil {
+				s.log().Error("persist generated chat title", "project", projectID, "chat", sess.ID, "err", renameErr)
+			} else {
+				_ = stream.Event(agent.NewEvent(agent.EventChatTitle, agent.ChatTitlePayload{SessionID: sess.ID, Title: renamed.Title}))
+			}
+		}
+	}
 	if timelineTx != nil {
 		if out.Reason == "error" || out.Reason == "canceled" || out.Reason == "max_iterations" {
 			timelineTx.Rollback()

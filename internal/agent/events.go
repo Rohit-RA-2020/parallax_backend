@@ -7,6 +7,7 @@ type EventType string
 
 const (
 	EventSession        EventType = "session"
+	EventChatTitle      EventType = "chat_title"
 	EventStep           EventType = "step"
 	EventText           EventType = "text"
 	EventThinking       EventType = "thinking"
@@ -36,6 +37,11 @@ type Sink func(Event)
 
 type SessionPayload struct {
 	SessionID string `json:"session_id"`
+}
+
+type ChatTitlePayload struct {
+	SessionID string `json:"session_id"`
+	Title     string `json:"title"`
 }
 
 type StepPayload struct {
