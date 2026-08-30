@@ -1,4 +1,5 @@
 .env
+compose.gpu.yaml
 /bin/
 /data/*
 !/data/elevenlabs-voices.json

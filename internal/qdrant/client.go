@@ -16,9 +16,23 @@ import (
 
 // Client talks to one Qdrant instance.
 type Client struct {
-	BaseURL    string
-	APIKey     string
-	HTTPClient *http.Client
+	BaseURL          string
+	APIKey           string
+	SharedCollection string
+	HTTPClient       *http.Client
+}
+
+func NewSharedClient(baseURL, apiKey, collection string) *Client {
+	c := NewClient(baseURL, apiKey)
+	c.SharedCollection = strings.TrimSpace(collection)
+	return c
+}
+
+func (c *Client) CollectionName(projectID string) string {
+	if c != nil && c.SharedCollection != "" {
+		return c.SharedCollection
+	}
+	return CollectionName(projectID)
 }
 
 func NewClient(baseURL, apiKey string) *Client {
@@ -29,6 +43,20 @@ func NewClient(baseURL, apiKey string) *Client {
 			Timeout: 30 * time.Second,
 		},
 	}
+}
+
+func (c *Client) Ready(ctx context.Context) error {
+	if c == nil || c.BaseURL == "" {
+		return fmt.Errorf("qdrant is not configured")
+	}
+	status, body, err := c.do(ctx, http.MethodGet, "/readyz", nil)
+	if err != nil {
+		return err
+	}
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("qdrant readiness: http %d: %s", status, compact(body))
+	}
+	return nil
 }
 
 // CollectionName is a valid Qdrant collection for a project id.
@@ -86,7 +114,7 @@ func (c *Client) EnsureCollection(ctx context.Context, name string, dim int) err
 		if ok && got != dim {
 			return fmt.Errorf("qdrant: collection %s has size %d, embedder returned %d; rebuild the collection", name, got, dim)
 		}
-		return nil
+		return c.ensurePayloadIndexes(ctx, name)
 	}
 	if status != http.StatusNotFound {
 		return fmt.Errorf("qdrant: get collection: http %d: %s", status, compact(body))
@@ -100,6 +128,22 @@ func (c *Client) EnsureCollection(ctx context.Context, name string, dim int) err
 	}
 	if status >= 300 {
 		return fmt.Errorf("qdrant: create collection: http %d: %s", status, compact(body))
+	}
+	return c.ensurePayloadIndexes(ctx, name)
+}
+
+func (c *Client) ensurePayloadIndexes(ctx context.Context, collection string) error {
+	if c == nil || c.SharedCollection == "" {
+		return nil
+	}
+	for _, field := range []string{"owner_id", "project_id", "kind", "asset_version_id"} {
+		status, body, err := c.do(ctx, http.MethodPut, "/collections/"+url.PathEscape(collection)+"/index?wait=true", map[string]any{"field_name": field, "field_schema": "keyword"})
+		if err != nil {
+			return err
+		}
+		if status >= 300 && status != http.StatusConflict {
+			return fmt.Errorf("qdrant: create payload index %s: http %d: %s", field, status, compact(body))
+		}
 	}
 	return nil
 }
@@ -187,6 +231,28 @@ func (c *Client) DeleteByPathAndKind(ctx context.Context, collection, path, kind
 	return c.deleteFilter(ctx, collection, map[string]any{"must": must})
 }
 
+func (c *Client) DeleteProjectPathAndKind(ctx context.Context, collection, projectID, path, kind string, includeEmptyKind bool) error {
+	must := []map[string]any{
+		{"key": "project_id", "match": map[string]any{"value": projectID}},
+		{"key": "path", "match": map[string]any{"value": path}},
+	}
+	if kind != "" {
+		kindMatch := map[string]any{"key": "kind", "match": map[string]any{"value": kind}}
+		if includeEmptyKind {
+			kindMatch = map[string]any{"should": []map[string]any{
+				{"key": "kind", "match": map[string]any{"value": kind}},
+				{"is_empty": map[string]any{"key": "kind"}},
+			}}
+		}
+		must = append(must, kindMatch)
+	}
+	return c.deleteFilter(ctx, collection, map[string]any{"must": must})
+}
+
+func (c *Client) DeleteProjectPoints(ctx context.Context, collection, projectID string) error {
+	return c.deleteFilter(ctx, collection, map[string]any{"must": []map[string]any{{"key": "project_id", "match": map[string]any{"value": projectID}}}})
+}
+
 func (c *Client) DeleteByHash(ctx context.Context, collection, hash string) error {
 	hash = strings.TrimSpace(hash)
 	if hash == "" {
@@ -238,6 +304,8 @@ func (c *Client) deleteFilter(ctx context.Context, collection string, filter map
 // SearchOpts narrows a project collection query. Kind and ExcludeKind keep
 // stills and transcript segments from mixing in the same collection.
 type SearchOpts struct {
+	ProjectID    string
+	OwnerID      string
 	Paths        []string
 	Kind         string
 	ExcludeKind  string
@@ -258,7 +326,7 @@ func (c *Client) Search(ctx context.Context, collection string, vector []float32
 		"limit":        limit,
 		"with_payload": true,
 	}
-	if filter := searchFilter(opts.Paths, opts.Kind, opts.ExcludeKind, opts.ExcludeKinds); filter != nil {
+	if filter := searchFilter(opts.ProjectID, opts.OwnerID, opts.Paths, opts.Kind, opts.ExcludeKind, opts.ExcludeKinds); filter != nil {
 		body["filter"] = filter
 	}
 	status, raw, err := c.do(ctx, http.MethodPost, "/collections/"+url.PathEscape(collection)+"/points/search", body)
@@ -342,11 +410,17 @@ func collectionDim(raw []byte) (int, bool) {
 	return parsed.Result.Config.Params.Vectors.Size, true
 }
 
-func searchFilter(paths []string, kind, excludeKind string, excludeKinds []string) map[string]any {
+func searchFilter(projectID, ownerID string, paths []string, kind, excludeKind string, excludeKinds []string) map[string]any {
 	kind = strings.TrimSpace(kind)
 	cleaned := cleanPaths(paths)
 
 	var must []map[string]any
+	if projectID = strings.TrimSpace(projectID); projectID != "" {
+		must = append(must, map[string]any{"key": "project_id", "match": map[string]any{"value": projectID}})
+	}
+	if ownerID = strings.TrimSpace(ownerID); ownerID != "" {
+		must = append(must, map[string]any{"key": "owner_id", "match": map[string]any{"value": ownerID}})
+	}
 	var mustNot []map[string]any
 	if kind != "" {
 		must = append(must, map[string]any{

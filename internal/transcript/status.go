@@ -1,6 +1,7 @@
 package transcript
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -294,6 +295,9 @@ func (x *Indexer) patchStatus(projectID, rel string, persist bool, fn func(*JobS
 	if persist && projectDir != "" {
 		x.persistStatus(projectDir, st)
 	}
+	if persist {
+		x.persistJobStatus(projectID, st)
+	}
 }
 
 func (x *Indexer) lookup(projectID, rel string) JobStatus {
@@ -402,6 +406,37 @@ func (x *Indexer) Statuses(projectID string) map[string]JobStatus {
 	out := map[string]JobStatus{}
 	if x == nil || x.Projects == nil {
 		return out
+	}
+	if x.Database != nil && x.Database.Pool != nil {
+		rows, err := x.Database.Pool.Query(context.Background(), `
+			SELECT a.logical_path,j.state,j.error,j.progress,j.timings,j.created_at,j.updated_at
+			FROM jobs j JOIN asset_versions v ON v.id=j.asset_version_id JOIN assets a ON a.id=v.asset_id
+			WHERE j.project_id=$1 AND j.job_type='analysis'`, projectID)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var rel, state, errText string
+				var progressBody, timingsBody []byte
+				var created, updated time.Time
+				if rows.Scan(&rel, &state, &errText, &progressBody, &timingsBody, &created, &updated) != nil {
+					continue
+				}
+				st := JobStatus{Path: rel, State: state, Error: errText, StartedAt: created, UpdatedAt: updated}
+				var progress struct {
+					Label       string  `json:"label"`
+					At          float64 `json:"at"`
+					Duration    float64 `json:"duration"`
+					SourceState string  `json:"source_state"`
+				}
+				_ = json.Unmarshal(progressBody, &progress)
+				_ = json.Unmarshal(timingsBody, &st.Timings)
+				st.Progress, st.At, st.Duration = progress.Label, progress.At, progress.Duration
+				if progress.SourceState != "" {
+					st.State = progress.SourceState
+				}
+				out[rel] = st
+			}
+		}
 	}
 	if project, err := x.Projects.Get(projectID); err == nil {
 		for path, st := range readStatusFile(project.Dir) {

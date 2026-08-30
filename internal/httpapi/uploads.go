@@ -16,10 +16,14 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
+
 	"github.com/tus/tusd/v2/pkg/filelocker"
 	"github.com/tus/tusd/v2/pkg/filestore"
 	tusd "github.com/tus/tusd/v2/pkg/handler"
 
+	"parallax/internal/auth"
+	"parallax/internal/database"
 	"parallax/internal/ffmpeg"
 	"parallax/internal/projects"
 )
@@ -38,18 +42,21 @@ type UploadManagerConfig struct {
 	Bins            ffmpeg.Bins
 	Logger          *slog.Logger
 	MaxSize         int64
+	MaxTempBytes    int64
 	Expiry          time.Duration
 	StatusRetention time.Duration
 	MaxActive       int
 	MaxPerProject   int
 	OnReady         func(projectID string, media projects.Media, uploadMs int64)
 	Validate        func(context.Context, string, string) error
+	Database        *database.DB
 }
 
 type uploadRecord struct {
 	ID        string          `json:"id"`
 	State     string          `json:"state"`
 	ProjectID string          `json:"project_id"`
+	OwnerID   string          `json:"owner_id,omitempty"`
 	Filename  string          `json:"filename"`
 	Filetype  string          `json:"filetype,omitempty"`
 	Offset    int64           `json:"offset"`
@@ -150,6 +157,7 @@ func NewUploadManager(cfg UploadManagerConfig) (*UploadManager, error) {
 		MaxSize:                    cfg.MaxSize,
 		DisableDownload:            true,
 		DisableConcatenation:       true,
+		Cors:                       &tusd.CorsConfig{Disable: true},
 		NotifyCompleteUploads:      true,
 		NotifyTerminatedUploads:    true,
 		NetworkTimeout:             uploadNetworkTimeout,
@@ -182,7 +190,25 @@ func (m *UploadManager) preTerminate(hook tusd.HookEvent) (tusd.HTTPResponse, er
 	return tusd.HTTPResponse{}, nil
 }
 
-func (m *UploadManager) Handler() http.Handler { return m.handler }
+func (m *UploadManager) Handler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if m.cfg.Database != nil && r.Method != http.MethodPost && r.Method != http.MethodOptions {
+			id := strings.Trim(strings.TrimSpace(r.URL.Path), "/")
+			if i := strings.IndexByte(id, '/'); i >= 0 {
+				id = id[:i]
+			}
+			if id != "" {
+				rec, err := m.readRecord(id)
+				user, ok := auth.UserFrom(r.Context())
+				if err != nil || !ok || rec.OwnerID == "" || rec.OwnerID != user.ID.String() {
+					writeError(w, http.StatusNotFound, "upload not found")
+					return
+				}
+			}
+		}
+		m.handler.ServeHTTP(w, r)
+	})
+}
 
 func (s *Server) handleUploadStatus(w http.ResponseWriter, r *http.Request) {
 	if s.Uploads == nil {
@@ -191,6 +217,10 @@ func (s *Server) handleUploadStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	rec, err := s.Uploads.Status(r.PathValue("id"))
 	if err != nil {
+		writeError(w, http.StatusNotFound, "upload not found")
+		return
+	}
+	if user, ok := auth.UserFrom(r.Context()); s.Auth != nil && (!ok || rec.OwnerID != user.ID.String()) {
 		writeError(w, http.StatusNotFound, "upload not found")
 		return
 	}
@@ -230,7 +260,15 @@ func (m *UploadManager) preCreate(hook tusd.HookEvent) (tusd.HTTPResponse, tusd.
 	if projectID == "" || filename == "" {
 		return tusd.HTTPResponse{}, tusd.FileInfoChanges{}, uploadHTTPError("ERR_UPLOAD_METADATA", "project_id and filename metadata are required", http.StatusBadRequest)
 	}
-	if _, err := m.cfg.Projects.Get(projectID); err != nil {
+	user, ok := auth.UserFrom(hook.Context)
+	if m.cfg.Database != nil && !ok {
+		return tusd.HTTPResponse{}, tusd.FileInfoChanges{}, uploadHTTPError("ERR_UPLOAD_AUTH", "authentication required", http.StatusUnauthorized)
+	}
+	store := m.cfg.Projects
+	if ok {
+		store = store.ForOwner(user.ID)
+	}
+	if _, err := store.Get(projectID); err != nil {
 		return tusd.HTTPResponse{}, tusd.FileInfoChanges{}, uploadHTTPError("ERR_UPLOAD_PROJECT", "project not found", http.StatusNotFound)
 	}
 	if !projects.IsSupportedMediaName(filename) {
@@ -246,6 +284,9 @@ func (m *UploadManager) preCreate(hook tusd.HookEvent) (tusd.HTTPResponse, tusd.
 	if active >= m.cfg.MaxActive || projectActive >= m.cfg.MaxPerProject {
 		return tusd.HTTPResponse{}, tusd.FileInfoChanges{}, uploadHTTPError("ERR_UPLOAD_BUSY", "too many active uploads", http.StatusTooManyRequests)
 	}
+	if m.cfg.MaxTempBytes > 0 && reserved+info.Size > m.cfg.MaxTempBytes {
+		return tusd.HTTPResponse{}, tusd.FileInfoChanges{}, uploadHTTPError("ERR_UPLOAD_SPACE", "temporary upload capacity is exhausted", http.StatusInsufficientStorage)
+	}
 	headroom := info.Size / 4
 	if headroom < 2<<30 {
 		headroom = 2 << 30
@@ -256,13 +297,18 @@ func (m *UploadManager) preCreate(hook tusd.HookEvent) (tusd.HTTPResponse, tusd.
 	id := newUploadID()
 	now := time.Now().UTC()
 	m.reservations[id] = info.Size
+	ownerID := ""
+	if ok {
+		ownerID = user.ID.String()
+	}
 	meta := tusd.MetaData{
 		"project_id": projectID,
+		"owner_id":   ownerID,
 		"filename":   filename,
 		"filetype":   filetype,
 		"created_at": now.Format(time.RFC3339Nano),
 	}
-	_ = m.writeRecord(uploadRecord{ID: id, State: "receiving", ProjectID: projectID, Filename: filename, Filetype: filetype, Size: info.Size, CreatedAt: now, UpdatedAt: now})
+	_ = m.writeRecord(uploadRecord{ID: id, State: "receiving", ProjectID: projectID, OwnerID: ownerID, Filename: filename, Filetype: filetype, Size: info.Size, CreatedAt: now, UpdatedAt: now})
 	go m.confirmCreation(id)
 	return tusd.HTTPResponse{}, tusd.FileInfoChanges{ID: id, MetaData: meta}, nil
 }
@@ -489,7 +535,7 @@ func recordFromInfo(info tusd.FileInfo) uploadRecord {
 	if info.Size > 0 && info.Offset == info.Size {
 		state = "finalizing"
 	}
-	return uploadRecord{ID: info.ID, State: state, ProjectID: info.MetaData["project_id"], Filename: info.MetaData["filename"], Filetype: info.MetaData["filetype"], Offset: info.Offset, Size: info.Size, CreatedAt: created, UpdatedAt: time.Now().UTC()}
+	return uploadRecord{ID: info.ID, State: state, ProjectID: info.MetaData["project_id"], OwnerID: info.MetaData["owner_id"], Filename: info.MetaData["filename"], Filetype: info.MetaData["filetype"], Offset: info.Offset, Size: info.Size, CreatedAt: created, UpdatedAt: time.Now().UTC()}
 }
 
 func (m *UploadManager) Status(id string) (uploadRecord, error) {
@@ -556,6 +602,23 @@ func (m *UploadManager) writeRecord(rec uploadRecord) error {
 		return err
 	}
 	ok = true
+	if m.cfg.Database != nil && rec.OwnerID != "" && rec.ProjectID != "" {
+		rowID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("parallax-upload:"+rec.ID))
+		var asset any
+		if rec.Media != nil && rec.Media.ID != "" {
+			if parsed, parseErr := uuid.Parse(rec.Media.ID); parseErr == nil {
+				asset = parsed
+			}
+		}
+		expires := rec.CreatedAt.Add(m.cfg.Expiry)
+		if expires.Before(time.Now()) {
+			expires = time.Now().Add(m.cfg.Expiry)
+		}
+		_, err = m.cfg.Database.Pool.Exec(context.Background(), `INSERT INTO upload_sessions(id,owner_id,project_id,tus_id,original_name,mime_type,expected_size,current_offset,temp_identifier,state,resulting_asset_id,attempts,error,expires_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$4,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT(tus_id) DO UPDATE SET current_offset=EXCLUDED.current_offset,state=EXCLUDED.state,resulting_asset_id=EXCLUDED.resulting_asset_id,attempts=EXCLUDED.attempts,error=EXCLUDED.error,expires_at=EXCLUDED.expires_at,updated_at=EXCLUDED.updated_at`, rowID, rec.OwnerID, rec.ProjectID, rec.ID, rec.Filename, rec.Filetype, rec.Size, rec.Offset, rec.State, asset, rec.Attempts, rec.Error, expires, rec.CreatedAt, rec.UpdatedAt)
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

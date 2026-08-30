@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"parallax/internal/database"
 	"parallax/internal/embed"
 	"parallax/internal/ffmpeg"
 	"parallax/internal/llm"
@@ -20,6 +21,7 @@ import (
 // Indexer transcribes imported media, translates segments, and upserts vectors.
 type Indexer struct {
 	Projects   *projects.Store
+	Database   *database.DB
 	Bins       ffmpeg.Bins
 	Whisper    Transcriber
 	Embeddings *embed.Client
@@ -240,6 +242,27 @@ func (x *Indexer) recoverPending() {
 	if x == nil || x.Projects == nil {
 		return
 	}
+	if x.Database != nil && x.Database.Pool != nil {
+		rows, err := x.Database.Pool.Query(context.Background(), `
+			SELECT j.project_id,a.logical_path FROM jobs j
+			JOIN asset_versions v ON v.id=j.asset_version_id
+			JOIN assets a ON a.id=v.asset_id
+			JOIN projects p ON p.id=j.project_id
+			WHERE j.job_type='analysis' AND p.state='active' AND
+			(j.state='queued' OR (j.state='running' AND (j.lease_expires_at IS NULL OR j.lease_expires_at<now())))`)
+		if err != nil {
+			x.log().Error("recover analysis jobs", "err", err)
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var projectID, rel string
+			if rows.Scan(&projectID, &rel) == nil {
+				x.Enqueue(projectID, rel)
+			}
+		}
+		return
+	}
 	for _, project := range x.Projects.List() {
 		for rel, st := range readStatusFile(project.Dir) {
 			if isTerminalState(st.State) || st.State == "" {
@@ -418,6 +441,9 @@ func (x *Indexer) indexSpeech(ctx context.Context, projectID, rel string) (*Docu
 	if err := Save(project.Dir, doc); err != nil {
 		return doc, err
 	}
+	if err := x.persistTranscript(ctx, projectID, doc); err != nil {
+		return doc, err
+	}
 	if !x.canEmbed() {
 		x.Mark(projectID, rel, StateReady, "")
 		x.logTimings(projectID, rel)
@@ -433,6 +459,7 @@ func (x *Indexer) indexSpeech(ctx context.Context, projectID, rel string) (*Docu
 	if err := x.upsert(ctx, projectID, doc); err != nil {
 		doc.Embedded = false
 		_ = Save(project.Dir, doc)
+		_ = x.persistTranscript(ctx, projectID, doc)
 		x.AddTiming(projectID, rel, TimingIndex, sinceMs(started))
 		x.Mark(projectID, rel, StateIndexFailed, err.Error())
 		x.log().Error("transcript embed", "project", projectID, "path", rel, "err", err)
@@ -441,6 +468,9 @@ func (x *Indexer) indexSpeech(ctx context.Context, projectID, rel string) (*Docu
 	x.AddTiming(projectID, rel, TimingIndex, sinceMs(started))
 	doc.Embedded = true
 	if err := Save(project.Dir, doc); err != nil {
+		return doc, err
+	}
+	if err := x.persistTranscript(ctx, projectID, doc); err != nil {
 		return doc, err
 	}
 	x.Mark(projectID, rel, StateReady, "")
@@ -689,11 +719,11 @@ func (x *Indexer) upsert(ctx context.Context, projectID string, doc *Document) e
 	if len(vectors) == 0 {
 		return fmt.Errorf("embed: no vectors returned")
 	}
-	collection := qdrant.CollectionName(projectID)
+	collection := x.Qdrant.CollectionName(projectID)
 	if err := x.Qdrant.EnsureCollection(ctx, collection, len(vectors[0])); err != nil {
 		return err
 	}
-	if err := x.Qdrant.DeleteByPathAndKind(ctx, collection, doc.Path, KindTranscript, true); err != nil {
+	if err := x.Qdrant.DeleteProjectPathAndKind(ctx, collection, projectID, doc.Path, KindTranscript, true); err != nil {
 		return err
 	}
 	points := make([]qdrant.Point, 0, len(segs))
@@ -701,7 +731,8 @@ func (x *Indexer) upsert(ctx context.Context, projectID string, doc *Document) e
 		points = append(points, qdrant.Point{
 			ID:     qdrant.PointID(doc.ContentHash, seg.ID),
 			Vector: vectors[i],
-			Payload: map[string]any{
+			Payload: x.scopedPayload(projectID, map[string]any{
+				"project_id":   projectID,
 				"kind":         KindTranscript,
 				"content_hash": doc.ContentHash,
 				"path":         doc.Path,
@@ -711,10 +742,33 @@ func (x *Indexer) upsert(ctx context.Context, projectID string, doc *Document) e
 				"text_en":      seg.TextEN,
 				"language":     doc.Language,
 				"segment_id":   seg.ID,
-			},
+			}),
 		})
 	}
 	return x.Qdrant.Upsert(ctx, collection, points)
+}
+
+func (x *Indexer) scopedPayload(projectID string, payload map[string]any) map[string]any {
+	payload["project_id"] = projectID
+	if x != nil && x.Projects != nil {
+		if project, err := x.Projects.Get(projectID); err == nil && project.OwnerID != "" {
+			payload["owner_id"] = project.OwnerID
+		}
+		path, _ := payload["path"].(string)
+		if path != "" {
+			if media, err := x.Projects.ListMedia(projectID); err == nil {
+				for _, item := range media {
+					if filepath.ToSlash(item.Path) == filepath.ToSlash(path) {
+						payload["asset_id"] = item.ID
+						payload["asset_version_id"] = item.VersionID
+						payload["logical_path"] = item.Path
+						break
+					}
+				}
+			}
+		}
+	}
+	return payload
 }
 
 // RemovePath drops Qdrant points for a deleted or replaced file.
@@ -730,7 +784,7 @@ func (x *Indexer) RemovePath(ctx context.Context, projectID, rel string) error {
 	if x.Qdrant == nil {
 		return nil
 	}
-	return x.Qdrant.DeleteByPath(ctx, qdrant.CollectionName(projectID), rel)
+	return x.Qdrant.DeleteProjectPathAndKind(ctx, x.Qdrant.CollectionName(projectID), projectID, rel, "", false)
 }
 
 // RemoveProject drops live index state and the project's Qdrant collection.
@@ -751,7 +805,10 @@ func (x *Indexer) RemoveProject(ctx context.Context, projectID string) error {
 	if x.Qdrant == nil {
 		return nil
 	}
-	return x.Qdrant.DeleteCollection(ctx, qdrant.CollectionName(projectID))
+	if x.Qdrant.SharedCollection != "" {
+		return x.Qdrant.DeleteProjectPoints(ctx, x.Qdrant.CollectionName(projectID), projectID)
+	}
+	return x.Qdrant.DeleteCollection(ctx, x.Qdrant.CollectionName(projectID))
 }
 
 // Get loads the transcript for the current bytes of a project file.
@@ -824,7 +881,19 @@ func (x *Indexer) search(ctx context.Context, projectID, query string, paths []s
 	if len(vecs) == 0 {
 		return nil, fmt.Errorf("embed: empty query vector")
 	}
-	return x.Qdrant.Search(ctx, qdrant.CollectionName(projectID), vecs[0], qdrant.SearchOpts{
+	ownerID := ""
+	filterProjectID := ""
+	if x.Projects != nil {
+		if p, pErr := x.Projects.Get(projectID); pErr == nil {
+			ownerID = p.OwnerID
+		}
+	}
+	if x.Qdrant.SharedCollection != "" {
+		filterProjectID = projectID
+	} else {
+		ownerID = ""
+	}
+	return x.Qdrant.Search(ctx, x.Qdrant.CollectionName(projectID), vecs[0], qdrant.SearchOpts{ProjectID: filterProjectID, OwnerID: ownerID,
 		Paths:        paths,
 		Kind:         kind,
 		ExcludeKinds: excludeKinds,

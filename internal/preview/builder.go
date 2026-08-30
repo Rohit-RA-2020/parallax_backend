@@ -298,8 +298,12 @@ func (b *Builder) build(ctx context.Context, projectID, rel string, enqueued tim
 			}
 			status.TimelinePending = false
 			status.TimelineReady = true
-			b.Mark(projectID, rel, status)
 		}
+		status, err = b.persistDurableStatus(ctx, projectID, project.Dir, rel, status)
+		if err != nil {
+			return err
+		}
+		b.Mark(projectID, rel, status)
 		return nil
 	}
 
@@ -318,8 +322,12 @@ func (b *Builder) build(ctx context.Context, projectID, rel string, enqueued tim
 			}
 			status.TimelinePending = false
 			status.TimelineReady = true
-			b.Mark(projectID, rel, status)
 		}
+		status, err = b.persistDurableStatus(ctx, projectID, project.Dir, rel, status)
+		if err != nil {
+			return err
+		}
+		b.Mark(projectID, rel, status)
 		return nil
 	}
 
@@ -392,7 +400,7 @@ func (b *Builder) build(ctx context.Context, projectID, rel string, enqueued tim
 	}
 	timings.TranscodeMs = elapsedMs(transcodeStarted)
 	timings.TotalMs = elapsedMs(buildStarted) + timings.QueueMs
-	b.Mark(projectID, rel, Status{
+	status := Status{
 		State:          StateReady,
 		URLPath:        proxyRel,
 		PosterPath:     posterRel,
@@ -406,9 +414,56 @@ func (b *Builder) build(ctx context.Context, projectID, rel string, enqueued tim
 		Pipeline:       encoded.Pipeline,
 		Timings:        timings,
 		StartedAt:      enqueued,
-	})
+	}
+	status, err = b.persistDurableStatus(ctx, projectID, project.Dir, rel, status)
+	if err != nil {
+		return err
+	}
+	b.Mark(projectID, rel, status)
 	b.log().Info("preview ready", "path", rel, "proxy", proxyRel, "codec", codec, "encoder", encoded.Encoder, "device", encoded.Device, "pipeline", encoded.Pipeline)
 	return nil
+}
+
+func (b *Builder) persistDurableStatus(ctx context.Context, projectID, projectDir, assetPath string, status Status) (Status, error) {
+	if b == nil || b.Projects == nil || !b.Projects.IsPostgres() {
+		return status, nil
+	}
+	type artifact struct {
+		role, variant, local string
+		assign               func(string)
+	}
+	artifacts := []artifact{}
+	if status.URLPath != "" && !strings.HasPrefix(status.URLPath, "/v1/") {
+		artifacts = append(artifacts, artifact{"preview", "browser", status.URLPath, func(url string) { status.URLPath = url }})
+	}
+	if status.PosterPath != "" && !strings.HasPrefix(status.PosterPath, "/v1/") {
+		artifacts = append(artifacts, artifact{"poster", "default", status.PosterPath, func(url string) { status.PosterPath = url }})
+	}
+	for i, rel := range append([]string(nil), status.TimelineFrames...) {
+		if strings.HasPrefix(rel, "/v1/") {
+			continue
+		}
+		index := i
+		artifacts = append(artifacts, artifact{"filmstrip", fmt.Sprintf("%02d", i), rel, func(url string) { status.TimelineFrames[index] = url }})
+	}
+	for _, item := range artifacts {
+		url, err := b.Projects.CommitDerivative(ctx, projectID, assetPath, item.role, item.variant, filepath.Join(projectDir, filepath.FromSlash(item.local)), status)
+		if err != nil {
+			return status, err
+		}
+		item.assign(url)
+	}
+	// Store the final URL-bearing status in at least one derivative row.
+	if len(artifacts) > 0 {
+		last := artifacts[len(artifacts)-1]
+		if _, err := b.Projects.CommitDerivative(ctx, projectID, assetPath, last.role, last.variant, filepath.Join(projectDir, filepath.FromSlash(last.local)), status); err != nil {
+			return status, err
+		}
+		for _, item := range artifacts {
+			_ = os.Remove(filepath.Join(projectDir, filepath.FromSlash(item.local)))
+		}
+	}
+	return status, nil
 }
 
 func timelineFrameCount(duration float64) int {

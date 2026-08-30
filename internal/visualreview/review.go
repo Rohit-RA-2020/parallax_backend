@@ -18,6 +18,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	"parallax/internal/database"
 	"parallax/internal/ffmpeg"
 	"parallax/internal/llm"
 	"parallax/internal/projects"
@@ -94,6 +98,7 @@ type Result struct {
 
 type Service struct {
 	Store        *projects.Store
+	Database     *database.DB
 	Bins         ffmpeg.Bins
 	Vision       llm.ChatProvider
 	RenderWidth  int
@@ -219,6 +224,9 @@ func (s *Service) ReviewDocument(ctx context.Context, req Request, doc projects.
 		result.Findings[i].ID = fmt.Sprintf("%s-finding-%d", result.ID, i+1)
 	}
 	if persist {
+		if err := s.persistFrames(ctx, root, doc, &result); err != nil {
+			return Result{}, err
+		}
 		if err := s.save(req.ProjectID, result); err != nil {
 			return Result{}, err
 		}
@@ -226,7 +234,49 @@ func (s *Service) ReviewDocument(ctx context.Context, req Request, doc projects.
 	return result, nil
 }
 
+func (s *Service) persistFrames(ctx context.Context, root string, doc projects.Timeline, result *Result) error {
+	if s == nil || s.Store == nil || !s.Store.IsPostgres() || result == nil || len(result.Frames) == 0 {
+		return nil
+	}
+	assetPath := ""
+	for _, clip := range doc.Clips {
+		if strings.TrimSpace(clip.MediaPath) != "" {
+			assetPath = clip.MediaPath
+			break
+		}
+	}
+	if assetPath == "" {
+		return errors.New("visual review has no durable source asset")
+	}
+	for i := range result.Frames {
+		frame := &result.Frames[i]
+		local := filepath.Join(root, filepath.FromSlash(frame.Path))
+		url, err := s.Store.CommitDerivative(ctx, result.ProjectID, assetPath, "review_frame", fmt.Sprintf("%d:%s", result.Revision, frame.ID), local, frame)
+		if err != nil {
+			return err
+		}
+		frame.Path = url
+		_ = os.Remove(local)
+	}
+	return nil
+}
+
 func (s *Service) Load(projectID string, revision int) (Result, error) {
+	if s.Database != nil && s.Database.Pool != nil {
+		var body []byte
+		err := s.Database.Pool.QueryRow(context.Background(), `SELECT result FROM visual_reviews WHERE project_id=$1 AND revision_no=$2 ORDER BY created_at DESC LIMIT 1`, projectID, revision).Scan(&body)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return Result{}, projects.ErrNotFound
+			}
+			return Result{}, err
+		}
+		var result Result
+		if err := json.Unmarshal(body, &result); err != nil {
+			return Result{}, err
+		}
+		return result, nil
+	}
 	project, err := s.Store.Get(projectID)
 	if err != nil {
 		return Result{}, err
@@ -243,6 +293,20 @@ func (s *Service) Load(projectID string, revision int) (Result, error) {
 }
 
 func (s *Service) save(projectID string, result Result) error {
+	if s.Database != nil && s.Database.Pool != nil {
+		id, err := uuid.Parse(result.ID)
+		if err != nil {
+			id = uuid.New()
+			result.ID = id.String()
+		}
+		body, err := json.Marshal(result)
+		if err != nil {
+			return err
+		}
+		_, err = s.Database.Pool.Exec(context.Background(), `INSERT INTO visual_reviews(id,project_id,revision_no,mode,state,error,result,created_at)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(project_id,revision_no,mode) DO UPDATE SET id=excluded.id,state=excluded.state,error=excluded.error,result=excluded.result,created_at=excluded.created_at`, id, projectID, result.Revision, result.Mode, result.Status, result.Error, body, result.CreatedAt)
+		return err
+	}
 	project, err := s.Store.Get(projectID)
 	if err != nil {
 		return err

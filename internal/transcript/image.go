@@ -107,6 +107,9 @@ func (x *Indexer) indexImage(ctx context.Context, projectID, rel string) error {
 		if err := SaveImage(project.Dir, doc); err != nil {
 			return err
 		}
+		if err := x.persistImageCaption(ctx, projectID, doc); err != nil {
+			return err
+		}
 		if !x.canEmbed() {
 			x.NoteCached(projectID, rel)
 			x.Mark(projectID, rel, StateReady, "")
@@ -117,6 +120,7 @@ func (x *Indexer) indexImage(ctx context.Context, projectID, rel string) error {
 		if err := x.upsertImage(ctx, projectID, doc, prevPath); err != nil {
 			doc.Embedded = false
 			_ = SaveImage(project.Dir, doc)
+			_ = x.persistImageCaption(ctx, projectID, doc)
 			x.AddTiming(projectID, rel, TimingIndex, sinceMs(started))
 			x.Mark(projectID, rel, StateIndexFailed, err.Error())
 			x.log().Error("image embed", "project", projectID, "path", rel, "err", err)
@@ -125,6 +129,9 @@ func (x *Indexer) indexImage(ctx context.Context, projectID, rel string) error {
 		x.AddTiming(projectID, rel, TimingIndex, sinceMs(started))
 		doc.Embedded = true
 		if err := SaveImage(project.Dir, doc); err != nil {
+			return err
+		}
+		if err := x.persistImageCaption(ctx, projectID, doc); err != nil {
 			return err
 		}
 		x.Mark(projectID, rel, StateReady, "")
@@ -174,6 +181,9 @@ func (x *Indexer) indexImage(ctx context.Context, projectID, rel string) error {
 		if err := SaveImage(project.Dir, doc); err != nil {
 			return err
 		}
+		if err := x.persistImageCaption(ctx, projectID, doc); err != nil {
+			return err
+		}
 	} else {
 		doc.Path = rel
 		doc.Name = name
@@ -183,6 +193,9 @@ func (x *Indexer) indexImage(ctx context.Context, projectID, rel string) error {
 	}
 
 	if !x.canEmbed() {
+		if err := x.persistImageCaption(ctx, projectID, doc); err != nil {
+			return err
+		}
 		x.Mark(projectID, rel, StateReady, "")
 		x.logTimings(projectID, rel)
 		return nil
@@ -192,6 +205,7 @@ func (x *Indexer) indexImage(ctx context.Context, projectID, rel string) error {
 	if err := x.upsertImage(ctx, projectID, doc, ""); err != nil {
 		doc.Embedded = false
 		_ = SaveImage(project.Dir, doc)
+		_ = x.persistImageCaption(ctx, projectID, doc)
 		x.AddTiming(projectID, rel, TimingIndex, sinceMs(started))
 		x.Mark(projectID, rel, StateIndexFailed, err.Error())
 		x.log().Error("image embed", "project", projectID, "path", rel, "err", err)
@@ -200,6 +214,9 @@ func (x *Indexer) indexImage(ctx context.Context, projectID, rel string) error {
 	x.AddTiming(projectID, rel, TimingIndex, sinceMs(started))
 	doc.Embedded = true
 	if err := SaveImage(project.Dir, doc); err != nil {
+		return err
+	}
+	if err := x.persistImageCaption(ctx, projectID, doc); err != nil {
 		return err
 	}
 	x.Mark(projectID, rel, StateReady, "")
@@ -227,25 +244,27 @@ func (x *Indexer) upsertImage(ctx context.Context, projectID string, doc *ImageC
 	if len(vectors) == 0 || len(vectors[0]) == 0 {
 		return fmt.Errorf("embed: no vectors returned")
 	}
-	collection := qdrant.CollectionName(projectID)
+	collection := x.Qdrant.CollectionName(projectID)
 	if err := x.Qdrant.EnsureCollection(ctx, collection, len(vectors[0])); err != nil {
 		return err
 	}
 	if prev := filepath.ToSlash(strings.TrimSpace(prevPath)); prev != "" && prev != doc.Path {
-		if err := x.Qdrant.DeleteByPathAndKind(ctx, collection, prev, KindImage, false); err != nil {
+		if err := x.Qdrant.DeleteProjectPathAndKind(ctx, collection, projectID, prev, KindImage, false); err != nil {
 			return err
 		}
 	}
-	if err := x.Qdrant.DeleteByPathAndKind(ctx, collection, doc.Path, KindImage, false); err != nil {
+	if err := x.Qdrant.DeleteProjectPathAndKind(ctx, collection, projectID, doc.Path, KindImage, false); err != nil {
 		return err
 	}
 	payload := map[string]any{
+		"project_id":   projectID,
 		"kind":         KindImage,
 		"path":         doc.Path,
 		"name":         doc.Name,
 		"content_hash": doc.ContentHash,
 		"text_en":      doc.TextEN,
 	}
+	payload = x.scopedPayload(projectID, payload)
 	if doc.Width > 0 {
 		payload["width"] = doc.Width
 	}

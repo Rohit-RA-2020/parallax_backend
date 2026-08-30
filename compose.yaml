@@ -1,0 +1,76 @@
+services:
+  init-permissions:
+    image: alpine:3.22.1
+    command: ["sh", "-c", "chown -R 10001:10001 /app-tmp /app-media"]
+    volumes:
+      - parallax_tmp:/app-tmp
+      - parallax_media:/app-media
+    restart: "no"
+
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:18.6-bookworm}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: parallax
+      POSTGRES_USER: parallax
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    volumes:
+      - parallax_postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U parallax -d parallax"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  qdrant:
+    image: ${QDRANT_IMAGE:-qdrant/qdrant:v1.15.4}
+    restart: unless-stopped
+    volumes:
+      - parallax_qdrant:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/6333"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    image: ${PARALLAX_IMAGE:-parallax-backend:latest}
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://parallax:${POSTGRES_PASSWORD}@postgres:5432/parallax?sslmode=disable
+      PARALLAX_ADDR: :8080
+      PARALLAX_WORKSPACE: /app/tmp/workspace
+      PARALLAX_DATA: /app/tmp/data
+      PARALLAX_MEDIA_STORAGE: /app/media
+      PARALLAX_TMP_MAX_BYTES: ${PARALLAX_TMP_MAX_BYTES:-107374182400}
+      WHISPER_PYTHON: /opt/whisper/bin/python
+      WHISPER_SCRIPT: /app/scripts/transcribe.py
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-parallax_media_v1}
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    ports:
+      - "${PARALLAX_PORT:-8080}:8080"
+    volumes:
+      - parallax_tmp:/app/tmp
+      - parallax_media:/app/media
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health/ready"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+volumes:
+  parallax_postgres:
+  parallax_qdrant:
+  parallax_tmp:
+  parallax_media:

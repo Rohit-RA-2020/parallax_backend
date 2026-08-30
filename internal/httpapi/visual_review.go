@@ -4,13 +4,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"parallax/internal/llm"
 	"parallax/internal/visualreview"
 )
 
 func (s *Server) visualReviewService(provider llm.ChatProvider) *visualreview.Service {
-	return &visualreview.Service{Store: s.Projects, Bins: s.Bins, Vision: provider, RenderWidth: 960, RenderHeight: 540}
+	return &visualreview.Service{Store: s.Projects, Database: s.Database, Bins: s.Bins, Vision: provider, RenderWidth: 960, RenderHeight: 540}
 }
 
 func (s *Server) handleVisualReview(w http.ResponseWriter, r *http.Request) {
@@ -47,7 +48,7 @@ func (s *Server) handleGetVisualReview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid review revision")
 		return
 	}
-	result, err := (&visualreview.Service{Store: s.Projects}).Load(id, revision)
+	result, err := (&visualreview.Service{Store: s.Projects, Database: s.Database}).Load(id, revision)
 	if err != nil {
 		writeProjectError(w, err)
 		return
@@ -57,7 +58,9 @@ func (s *Server) handleGetVisualReview(w http.ResponseWriter, r *http.Request) {
 
 func writeVisualReviewJSON(w http.ResponseWriter, projectID string, result visualreview.Result) {
 	for i := range result.Frames {
-		result.Frames[i].Path = projectFileURL(projectID, result.Frames[i].Path)
+		if !strings.HasPrefix(result.Frames[i].Path, "/v1/") {
+			result.Frames[i].Path = projectFileURL(projectID, result.Frames[i].Path)
+		}
 	}
 	writeJSON(w, http.StatusOK, result)
 }

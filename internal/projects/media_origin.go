@@ -1,6 +1,7 @@
 package projects
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -36,6 +37,19 @@ func writeMediaOrigins(p Project, origins map[string]string) error {
 // SetMediaOrigin records how a project asset entered the bin. This lets
 // timeline placement preserve semantic behavior after reloads.
 func (s *Store) SetMediaOrigin(id, rel, origin string) error {
+	if s.pg != nil {
+		if _, err := s.Get(id); err != nil {
+			return err
+		}
+		result, err := s.pg.Exec(context.Background(), `UPDATE assets SET origin=$3,updated_at=now() WHERE project_id=$1 AND logical_path=$2 AND deleted_at IS NULL`, id, filepath.ToSlash(strings.TrimSpace(rel)), strings.TrimSpace(origin))
+		if err != nil {
+			return err
+		}
+		if result.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		return nil
+	}
 	if _, err := s.ResolveFile(id, rel); err != nil {
 		return err
 	}
@@ -57,6 +71,14 @@ func (s *Store) SetMediaOrigin(id, rel, origin string) error {
 }
 
 func (s *Store) MediaOrigin(id, rel string) string {
+	if s.pg != nil {
+		if _, err := s.Get(id); err != nil {
+			return ""
+		}
+		var origin string
+		_ = s.pg.QueryRow(context.Background(), `SELECT origin FROM assets WHERE project_id=$1 AND logical_path=$2 AND deleted_at IS NULL`, id, filepath.ToSlash(strings.TrimSpace(rel))).Scan(&origin)
+		return origin
+	}
 	p, err := s.Get(id)
 	if err != nil {
 		return ""

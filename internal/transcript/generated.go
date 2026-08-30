@@ -66,6 +66,9 @@ func (x *Indexer) IndexGeneratedAudio(ctx context.Context, projectID, rel string
 		if err := Save(project.Dir, doc); err != nil {
 			return fail(err)
 		}
+		if err := x.persistTranscript(ctx, projectID, doc); err != nil {
+			return fail(err)
+		}
 		if x.canEmbed() {
 			if err := x.upsert(ctx, projectID, doc); err != nil {
 				return fail(err)
@@ -74,7 +77,13 @@ func (x *Indexer) IndexGeneratedAudio(ctx context.Context, projectID, rel string
 			if err := Save(project.Dir, doc); err != nil {
 				return fail(err)
 			}
+			if err := x.persistTranscript(ctx, projectID, doc); err != nil {
+				return fail(err)
+			}
 		}
+	}
+	if err := x.persistGeneratedAudio(ctx, projectID, rel, metadata); err != nil {
+		return fail(err)
 	}
 	if x.canEmbed() {
 		text := generatedSearchText(metadata)
@@ -86,14 +95,15 @@ func (x *Indexer) IndexGeneratedAudio(ctx context.Context, projectID, rel string
 			if len(vectors) != 1 || len(vectors[0]) == 0 {
 				return fail(fmt.Errorf("generated audio embed: no vector returned"))
 			}
-			collection := qdrant.CollectionName(projectID)
+			collection := x.Qdrant.CollectionName(projectID)
 			if err := x.Qdrant.EnsureCollection(ctx, collection, len(vectors[0])); err != nil {
 				return fail(err)
 			}
-			if err := x.Qdrant.DeleteByPathAndKind(ctx, collection, rel, KindGeneratedAudio, false); err != nil {
+			if err := x.Qdrant.DeleteProjectPathAndKind(ctx, collection, projectID, rel, KindGeneratedAudio, false); err != nil {
 				return fail(err)
 			}
 			payload := map[string]any{
+				"project_id":      projectID,
 				"kind":            KindGeneratedAudio,
 				"content_hash":    hash,
 				"path":            rel,
@@ -108,6 +118,7 @@ func (x *Indexer) IndexGeneratedAudio(ctx context.Context, projectID, rel string
 				"description":     metadata.Description,
 				"song_id":         metadata.SongID,
 			}
+			payload = x.scopedPayload(projectID, payload)
 			if err := x.Qdrant.Upsert(ctx, collection, []qdrant.Point{{
 				ID: qdrant.PointID(hash, KindGeneratedAudio), Vector: vectors[0], Payload: payload,
 			}}); err != nil {

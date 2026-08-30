@@ -155,6 +155,9 @@ func (x *Indexer) finishVideoScenes(ctx context.Context, projectID string, doc *
 	if err != nil {
 		return err
 	}
+	if err := x.persistVideoScenes(ctx, projectID, doc); err != nil {
+		return err
+	}
 	if !x.canEmbed() {
 		x.Mark(projectID, doc.Path, StateReady, "")
 		x.logTimings(projectID, doc.Path)
@@ -165,6 +168,7 @@ func (x *Indexer) finishVideoScenes(ctx context.Context, projectID string, doc *
 	if err := x.upsertVideoScenes(ctx, projectID, doc); err != nil {
 		doc.Embedded = false
 		_ = SaveVideoScenes(project.Dir, doc)
+		_ = x.persistVideoScenes(ctx, projectID, doc)
 		x.AddTiming(projectID, doc.Path, TimingIndex, sinceMs(started))
 		x.Mark(projectID, doc.Path, StateIndexFailed, err.Error())
 		x.log().Error("video scene embed", "project", projectID, "path", doc.Path, "err", err)
@@ -173,6 +177,9 @@ func (x *Indexer) finishVideoScenes(ctx context.Context, projectID string, doc *
 	x.AddTiming(projectID, doc.Path, TimingIndex, sinceMs(started))
 	doc.Embedded = true
 	if err := SaveVideoScenes(project.Dir, doc); err != nil {
+		return err
+	}
+	if err := x.persistVideoScenes(ctx, projectID, doc); err != nil {
 		return err
 	}
 	x.Mark(projectID, doc.Path, StateReady, "")
@@ -205,16 +212,17 @@ func (x *Indexer) upsertVideoScenes(ctx context.Context, projectID string, doc *
 	if len(vectors) == 0 || len(vectors[0]) == 0 {
 		return fmt.Errorf("embed: no vectors returned")
 	}
-	collection := qdrant.CollectionName(projectID)
+	collection := x.Qdrant.CollectionName(projectID)
 	if err := x.Qdrant.EnsureCollection(ctx, collection, len(vectors[0])); err != nil {
 		return err
 	}
-	if err := x.Qdrant.DeleteByPathAndKind(ctx, collection, doc.Path, KindVideoScene, false); err != nil {
+	if err := x.Qdrant.DeleteProjectPathAndKind(ctx, collection, projectID, doc.Path, KindVideoScene, false); err != nil {
 		return err
 	}
 	points := make([]qdrant.Point, 0, len(scenes))
 	for i, scene := range scenes {
 		payload := map[string]any{
+			"project_id":   projectID,
 			"kind":         KindVideoScene,
 			"path":         doc.Path,
 			"name":         doc.Name,
@@ -225,6 +233,7 @@ func (x *Indexer) upsertVideoScenes(ctx context.Context, projectID string, doc *
 			"text_en":      scene.TextEN,
 			"scene_id":     scene.ID,
 		}
+		payload = x.scopedPayload(projectID, payload)
 		if strings.TrimSpace(scene.SpokenEN) != "" {
 			payload["spoken_en"] = scene.SpokenEN
 		}

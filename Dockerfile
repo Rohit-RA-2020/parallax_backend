@@ -47,8 +47,8 @@ RUN groupadd --gid 10001 parallax \
 
 USER parallax
 EXPOSE 8080
-VOLUME ["/app/workspace", "/app/data"]
+VOLUME ["/app/workspace", "/app/data", "/app/media"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD curl --fail --silent http://127.0.0.1:8080/v1/settings >/dev/null || exit 1
+  CMD curl --fail --silent http://127.0.0.1:8080/health/ready >/dev/null || exit 1
 
 ENTRYPOINT ["/usr/local/bin/parallax"]

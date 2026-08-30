@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"parallax/internal/auth"
 	"parallax/internal/ffmpeg"
 	"parallax/internal/preview"
 	"parallax/internal/projects"
@@ -38,11 +39,15 @@ type mediaResponse struct {
 	Preview    *preview.Status       `json:"preview,omitempty"`
 }
 
-func (s *Server) handleListProjects(w http.ResponseWriter, _ *http.Request) {
-	items := s.Projects.List()
+func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
+	store := s.Projects
+	if user, ok := auth.UserFrom(r.Context()); ok {
+		store = store.ForOwner(user.ID)
+	}
+	items := store.List()
 	out := make([]projectResponse, 0, len(items))
 	for _, p := range items {
-		media, _ := s.Projects.ListMedia(p.ID)
+		media, _ := store.ListMedia(p.ID)
 		out = append(out, projectResponse{Project: p, MediaCount: len(media)})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"projects": out})
@@ -54,7 +59,11 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	p, err := s.Projects.Create(body.Name)
+	store := s.Projects
+	if user, ok := auth.UserFrom(r.Context()); ok {
+		store = store.ForOwner(user.ID)
+	}
+	p, err := store.Create(body.Name)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -82,9 +91,13 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if s.Indexer != nil {
+	// The legacy in-memory store is retained only for local unit tests and has
+	// no durable purge worker. Production PostgreSQL deletion is handled by the
+	// leased project_purge job.
+	if !s.Projects.IsPostgres() && s.Indexer != nil {
 		if err := s.Indexer.RemoveProject(r.Context(), id); err != nil {
-			s.log().Error("delete project index", "project", id, "err", err)
+			writeError(w, http.StatusConflict, err.Error())
+			return
 		}
 	}
 	if err := s.Projects.Delete(id); err != nil {
@@ -434,6 +447,9 @@ func (s *Server) mediaResponses(projectID string, media []projects.Media) []medi
 	out := make([]mediaResponse, 0, len(media))
 	for _, item := range media {
 		u := projectFileURL(projectID, item.Path)
+		if s.Projects != nil && s.Projects.IsPostgres() && item.VersionID != "" {
+			u = "/v1/media/" + url.PathEscape(item.VersionID)
+		}
 		if !item.ModifiedAt.IsZero() {
 			u += "?t=" + url.QueryEscape(fmt.Sprintf("%d-%d", item.ModifiedAt.UnixMilli(), item.Bytes))
 		}
@@ -444,16 +460,19 @@ func (s *Server) mediaResponses(projectID string, media []projects.Media) []medi
 		}
 		if st, ok := previews[item.Path]; ok {
 			copy := st
-			if copy.URLPath != "" {
+			if copy.URLPath != "" && !strings.HasPrefix(copy.URLPath, "/v1/") {
 				copy.URLPath = projectFileURL(projectID, copy.URLPath)
 			}
-			if copy.PosterPath != "" {
+			if copy.PosterPath != "" && !strings.HasPrefix(copy.PosterPath, "/v1/") {
 				copy.PosterPath = projectFileURL(projectID, copy.PosterPath)
 			}
 			if len(copy.TimelineFrames) > 0 {
 				frames := make([]string, len(copy.TimelineFrames))
 				for i, frame := range copy.TimelineFrames {
-					frames[i] = projectFileURL(projectID, frame)
+					frames[i] = frame
+					if !strings.HasPrefix(frame, "/v1/") {
+						frames[i] = projectFileURL(projectID, frame)
+					}
 				}
 				copy.TimelineFrames = frames
 			}
@@ -494,6 +513,11 @@ func (s *Server) attachDurations(projectID string, media []projects.Media) {
 		kind := media[i].Kind
 		if kind != "video" && kind != "audio" && kind != "image" {
 			continue
+		}
+		if s.Projects.IsPostgres() {
+			if _, resolveErr := s.Projects.ResolveFile(projectID, media[i].Path); resolveErr != nil {
+				continue
+			}
 		}
 		info, err := ffmpeg.ProbeMedia(ctx, s.Bins, project.Dir, media[i].Path)
 		if err != nil {

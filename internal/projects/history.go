@@ -1,6 +1,7 @@
 package projects
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 var (
@@ -210,6 +214,9 @@ func readCheckpoints(p Project) (map[string]int, error) {
 }
 
 func (s *Store) History(projectID string) (History, error) {
+	if s.pg != nil {
+		return s.pgHistory(context.Background(), projectID)
+	}
 	p, err := s.Get(projectID)
 	if err != nil {
 		return History{}, err
@@ -224,6 +231,68 @@ func (s *Store) History(projectID string) (History, error) {
 		return History{}, err
 	}
 	return buildHistory(p)
+}
+
+func (s *Store) pgHistory(ctx context.Context, projectID string) (History, error) {
+	if _, err := s.Get(projectID); err != nil {
+		return History{}, err
+	}
+	var head int
+	if err := s.pg.QueryRow(ctx, `SELECT head_revision_no FROM projects WHERE id=$1 AND state='active'`, projectID).Scan(&head); err != nil {
+		return History{}, err
+	}
+	rows, err := s.pg.Query(ctx, `SELECT revision_no,parent_revision_no,actor_type,summary,COALESCE(chat_id::text,''),created_at,timeline FROM project_revisions WHERE project_id=$1 ORDER BY revision_no`, projectID)
+	if err != nil {
+		return History{}, err
+	}
+	defer rows.Close()
+	revs := []Revision{}
+	byID := map[int]int{}
+	for rows.Next() {
+		var r Revision
+		var parent *int
+		var body []byte
+		if err = rows.Scan(&r.ID, &parent, &r.Actor, &r.Summary, &r.ChatID, &r.CreatedAt, &body); err != nil {
+			return History{}, err
+		}
+		r.ParentID = parent
+		if err = json.Unmarshal(body, &r.Timeline); err != nil {
+			return History{}, err
+		}
+		r.Media = map[string]string{}
+		byID[r.ID] = len(revs)
+		revs = append(revs, r)
+	}
+	if err = rows.Err(); err != nil {
+		return History{}, err
+	}
+	for i := range revs {
+		if revs[i].ParentID != nil {
+			if p, ok := byID[*revs[i].ParentID]; ok {
+				revs[p].Children = append(revs[p].Children, revs[i].ID)
+			}
+		}
+	}
+	cpRows, err := s.pg.Query(ctx, `SELECT revision_no,name::text FROM checkpoints WHERE project_id=$1 ORDER BY name`, projectID)
+	if err != nil {
+		return History{}, err
+	}
+	defer cpRows.Close()
+	for cpRows.Next() {
+		var id int
+		var name string
+		if cpRows.Scan(&id, &name) == nil {
+			if i, ok := byID[id]; ok {
+				revs[i].Checkpoints = append(revs[i].Checkpoints, name)
+			}
+		}
+	}
+	h := History{Head: head, Revisions: revs}
+	if i, ok := byID[head]; ok {
+		h.CanUndo = revs[i].ParentID != nil
+		h.RedoCandidates = append([]int(nil), revs[i].Children...)
+	}
+	return h, nil
 }
 
 func buildHistory(p Project) (History, error) {
@@ -268,6 +337,9 @@ func buildHistory(p Project) (History, error) {
 }
 
 func (s *Store) RestoreRevision(projectID string, target, expected int) (Timeline, error) {
+	if s.pg != nil {
+		return s.restorePGRevision(context.Background(), projectID, target, expected)
+	}
 	p, err := s.Get(projectID)
 	if err != nil {
 		return Timeline{}, err
@@ -308,7 +380,73 @@ func (s *Store) RestoreRevision(projectID string, target, expected int) (Timelin
 	return doc, nil
 }
 
+func (s *Store) restorePGRevision(ctx context.Context, projectID string, target, expected int) (Timeline, error) {
+	if _, err := s.Get(projectID); err != nil {
+		return Timeline{}, err
+	}
+	tx, err := s.pg.Begin(ctx)
+	if err != nil {
+		return Timeline{}, err
+	}
+	defer tx.Rollback(ctx)
+	var head int
+	query := `SELECT head_revision_no FROM projects WHERE id=$1 AND state='active'`
+	args := []any{projectID}
+	if s.ownerID != uuid.Nil {
+		query += ` AND owner_id=$2`
+		args = append(args, s.ownerID)
+	}
+	query += ` FOR UPDATE`
+	if err = tx.QueryRow(ctx, query, args...).Scan(&head); errors.Is(err, pgx.ErrNoRows) {
+		return Timeline{}, ErrNotFound
+	} else if err != nil {
+		return Timeline{}, err
+	}
+	if expected >= 0 && expected != head {
+		return Timeline{}, ErrRevisionConflict
+	}
+	var body []byte
+	if err = tx.QueryRow(ctx, `SELECT timeline FROM project_revisions WHERE project_id=$1 AND revision_no=$2`, projectID, target).Scan(&body); errors.Is(err, pgx.ErrNoRows) {
+		return Timeline{}, ErrNotFound
+	} else if err != nil {
+		return Timeline{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE assets SET deleted_at=now(),updated_at=now() WHERE project_id=$1`, projectID); err != nil {
+		return Timeline{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE assets a SET current_version_id=ra.asset_version_id,logical_path=ra.logical_path,display_name=ra.display_name,deleted_at=CASE WHEN ra.present THEN NULL ELSE now() END,updated_at=now() FROM revision_assets ra WHERE ra.project_id=$1 AND ra.revision_no=$2 AND a.id=ra.asset_id`, projectID, target); err != nil {
+		return Timeline{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE projects SET head_revision_no=$2,updated_at=now() WHERE id=$1`, projectID, target); err != nil {
+		return Timeline{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return Timeline{}, err
+	}
+	var doc Timeline
+	if err = json.Unmarshal(body, &doc); err != nil {
+		return Timeline{}, err
+	}
+	doc.Revision = target
+	return doc, nil
+}
+
 func (s *Store) Undo(projectID string, expected int) (Timeline, error) {
+	if s.pg != nil {
+		h, err := s.History(projectID)
+		if err != nil {
+			return Timeline{}, err
+		}
+		if expected >= 0 && h.Head != expected {
+			return Timeline{}, ErrRevisionConflict
+		}
+		for _, r := range h.Revisions {
+			if r.ID == h.Head && r.ParentID != nil {
+				return s.RestoreRevision(projectID, *r.ParentID, h.Head)
+			}
+		}
+		return Timeline{}, ErrNoUndo
+	}
 	h, err := s.History(projectID)
 	if err != nil {
 		return Timeline{}, err
@@ -330,6 +468,28 @@ func (s *Store) Undo(projectID string, expected int) (Timeline, error) {
 }
 
 func (s *Store) Redo(projectID string, expected, target int) (Timeline, error) {
+	if s.pg != nil {
+		h, err := s.History(projectID)
+		if err != nil {
+			return Timeline{}, err
+		}
+		if expected >= 0 && h.Head != expected {
+			return Timeline{}, ErrRevisionConflict
+		}
+		candidates := h.RedoCandidates
+		if target < 0 {
+			if len(candidates) != 1 {
+				return Timeline{}, ErrNoRedo
+			}
+			target = candidates[0]
+		}
+		for _, id := range candidates {
+			if id == target {
+				return s.RestoreRevision(projectID, target, h.Head)
+			}
+		}
+		return Timeline{}, ErrNoRedo
+	}
 	h, err := s.History(projectID)
 	if err != nil {
 		return Timeline{}, err
@@ -357,6 +517,24 @@ func (s *Store) Redo(projectID string, expected, target int) (Timeline, error) {
 }
 
 func (s *Store) CreateCheckpoint(projectID, name string, revision int) error {
+	if s.pg != nil {
+		if _, err := s.Get(projectID); err != nil {
+			return err
+		}
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return errors.New("checkpoint name is required")
+		}
+		if revision < 0 {
+			h, err := s.History(projectID)
+			if err != nil {
+				return err
+			}
+			revision = h.Head
+		}
+		_, err := s.pg.Exec(context.Background(), `INSERT INTO checkpoints(id,project_id,revision_no,name) VALUES($1,$2,$3,$4)`, uuid.New(), projectID, revision, name)
+		return err
+	}
 	p, err := s.Get(projectID)
 	if err != nil {
 		return err
@@ -393,6 +571,19 @@ func (s *Store) CreateCheckpoint(projectID, name string, revision int) error {
 }
 
 func (s *Store) RenameCheckpoint(projectID, oldName, newName string) error {
+	if s.pg != nil {
+		if _, err := s.Get(projectID); err != nil {
+			return err
+		}
+		result, err := s.pg.Exec(context.Background(), `UPDATE checkpoints SET name=$3,updated_at=now() WHERE project_id=$1 AND name=$2`, projectID, oldName, newName)
+		if err != nil {
+			return err
+		}
+		if result.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		return nil
+	}
 	p, err := s.Get(projectID)
 	if err != nil {
 		return err
@@ -418,6 +609,19 @@ func (s *Store) RenameCheckpoint(projectID, oldName, newName string) error {
 }
 
 func (s *Store) DeleteCheckpoint(projectID, name string) error {
+	if s.pg != nil {
+		if _, err := s.Get(projectID); err != nil {
+			return err
+		}
+		result, err := s.pg.Exec(context.Background(), `DELETE FROM checkpoints WHERE project_id=$1 AND name=$2`, projectID, name)
+		if err != nil {
+			return err
+		}
+		if result.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		return nil
+	}
 	p, err := s.Get(projectID)
 	if err != nil {
 		return err

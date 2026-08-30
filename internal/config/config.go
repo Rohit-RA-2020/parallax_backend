@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,6 +48,15 @@ type Settings struct {
 // Config is the process-wide snapshot used at startup.
 type Config struct {
 	Addr                       string
+	DatabaseURL                string
+	SupabaseURL                string
+	SupabaseJWKSURL            string
+	SupabaseIssuer             string
+	SupabaseAudience           string
+	AllowedOrigins             []string
+	MediaCookieSecret          string
+	MediaCookieSecure          bool
+	MediaStorageDir            string
 	WorkspaceDir               string
 	DataDir                    string
 	SettingsPath               string
@@ -78,6 +88,7 @@ type Config struct {
 	MaxIters                   int
 	MaxParallelTools           int
 	MaxUploadBytes             int64
+	TempMaxBytes               int64
 	UploadExpiry               time.Duration
 	UploadStatusRetention      time.Duration
 	MaxActiveUploads           int
@@ -93,6 +104,7 @@ type Config struct {
 	Embedding                  Embedding
 	QdrantURL                  string
 	QdrantAPIKey               string
+	QdrantCollection           string
 	WhisperModel               string
 	WhisperDevice              string
 	WhisperPython              string
@@ -129,9 +141,22 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("data: %w", err)
 	}
+	mediaStorage, err := filepath.Abs(envOr("PARALLAX_MEDIA_STORAGE", filepath.Join(cwd, "media-storage")))
+	if err != nil {
+		return Config{}, fmt.Errorf("media storage: %w", err)
+	}
 
 	cfg := Config{
 		Addr:                       envOr("PARALLAX_ADDR", DefaultAddr),
+		DatabaseURL:                strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		SupabaseURL:                strings.TrimRight(strings.TrimSpace(os.Getenv("SUPABASE_URL")), "/"),
+		SupabaseJWKSURL:            strings.TrimSpace(os.Getenv("SUPABASE_JWKS_URL")),
+		SupabaseIssuer:             strings.TrimRight(strings.TrimSpace(os.Getenv("SUPABASE_ISSUER")), "/"),
+		SupabaseAudience:           envOr("SUPABASE_AUDIENCE", "authenticated"),
+		AllowedOrigins:             splitCSV(os.Getenv("PARALLAX_ALLOWED_ORIGINS")),
+		MediaCookieSecret:          strings.TrimSpace(os.Getenv("MEDIA_COOKIE_SECRET")),
+		MediaCookieSecure:          envBool("MEDIA_COOKIE_SECURE", true),
+		MediaStorageDir:            mediaStorage,
 		WorkspaceDir:               workspace,
 		DataDir:                    data,
 		SettingsPath:               filepath.Join(data, "settings.json"),
@@ -163,6 +188,7 @@ func Load() (Config, error) {
 		MaxIters:                   envInt("PARALLAX_MAX_ITERS", DefaultMaxIters),
 		MaxParallelTools:           envInt("PARALLAX_MAX_PARALLEL_TOOLS", 4),
 		MaxUploadBytes:             envInt64("PARALLAX_MAX_UPLOAD_BYTES", 64<<30),
+		TempMaxBytes:               envInt64("PARALLAX_TMP_MAX_BYTES", 100<<30),
 		UploadExpiry:               time.Duration(envInt("PARALLAX_UPLOAD_EXPIRY_HOURS", 24)) * time.Hour,
 		UploadStatusRetention:      time.Duration(envInt("PARALLAX_UPLOAD_STATUS_RETENTION_HOURS", 168)) * time.Hour,
 		MaxActiveUploads:           envInt("PARALLAX_MAX_ACTIVE_UPLOADS", 8),
@@ -180,13 +206,20 @@ func Load() (Config, error) {
 			APIKey:  strings.TrimSpace(os.Getenv("EMBEDDING_API_KEY")),
 			Model:   strings.TrimSpace(os.Getenv("EMBEDDING_MODEL")),
 		},
-		QdrantURL:      strings.TrimRight(envOr("QDRANT_URL", "http://127.0.0.1:6333"), "/"),
-		QdrantAPIKey:   strings.TrimSpace(os.Getenv("QDRANT_API_KEY")),
-		WhisperModel:   envOr("WHISPER_MODEL", "large-v3-turbo"),
-		WhisperDevice:  strings.ToLower(envOr("WHISPER_DEVICE", "auto")),
-		WhisperPython:  resolveExisting(envOr("WHISPER_PYTHON", filepath.Join("scripts", ".venv", "bin", "python")), cwd),
-		WhisperScript:  resolveExisting(envOr("WHISPER_SCRIPT", filepath.Join("scripts", "transcribe.py")), cwd),
-		WhisperCompute: envOr("WHISPER_COMPUTE", "int8"),
+		QdrantURL:        strings.TrimRight(envOr("QDRANT_URL", "http://127.0.0.1:6333"), "/"),
+		QdrantAPIKey:     strings.TrimSpace(os.Getenv("QDRANT_API_KEY")),
+		QdrantCollection: envOr("QDRANT_COLLECTION", "parallax_media_v1"),
+		WhisperModel:     envOr("WHISPER_MODEL", "large-v3-turbo"),
+		WhisperDevice:    strings.ToLower(envOr("WHISPER_DEVICE", "auto")),
+		WhisperPython:    resolveExisting(envOr("WHISPER_PYTHON", filepath.Join("scripts", ".venv", "bin", "python")), cwd),
+		WhisperScript:    resolveExisting(envOr("WHISPER_SCRIPT", filepath.Join("scripts", "transcribe.py")), cwd),
+		WhisperCompute:   envOr("WHISPER_COMPUTE", "int8"),
+	}
+	if cfg.SupabaseIssuer == "" && cfg.SupabaseURL != "" {
+		cfg.SupabaseIssuer = cfg.SupabaseURL + "/auth/v1"
+	}
+	if cfg.SupabaseJWKSURL == "" && cfg.SupabaseURL != "" {
+		cfg.SupabaseJWKSURL = cfg.SupabaseURL + "/auth/v1/.well-known/jwks.json"
 	}
 
 	if cfg.MaxIters < 1 {
@@ -197,6 +230,9 @@ func Load() (Config, error) {
 	}
 	if cfg.MaxUploadBytes < 1<<20 {
 		cfg.MaxUploadBytes = 64 << 30
+	}
+	if cfg.TempMaxBytes < cfg.MaxUploadBytes {
+		cfg.TempMaxBytes = max(cfg.MaxUploadBytes, 100<<30)
 	}
 	if cfg.UploadExpiry < time.Hour {
 		cfg.UploadExpiry = 24 * time.Hour
@@ -242,6 +278,54 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
+func (c Config) ValidateInfrastructure() error {
+	missing := make([]string, 0, 8)
+	for name, value := range map[string]string{
+		"DATABASE_URL":        c.DatabaseURL,
+		"SUPABASE_URL":        c.SupabaseURL,
+		"SUPABASE_JWKS_URL":   c.SupabaseJWKSURL,
+		"SUPABASE_ISSUER":     c.SupabaseIssuer,
+		"MEDIA_COOKIE_SECRET": c.MediaCookieSecret,
+	} {
+		if strings.TrimSpace(value) == "" {
+			missing = append(missing, name)
+		}
+	}
+	if len(c.MediaCookieSecret) > 0 && len(c.MediaCookieSecret) < 32 {
+		return errors.New("MEDIA_COOKIE_SECRET must be at least 32 characters")
+	}
+	if len(c.AllowedOrigins) == 0 {
+		missing = append(missing, "PARALLAX_ALLOWED_ORIGINS")
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return fmt.Errorf("missing infrastructure configuration: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+func splitCSV(value string) []string {
+	var out []string
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func envBool(name string, fallback bool) bool {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return fallback
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return fallback
+	}
+	return b
+}
+
 // PublicProfile is the client-safe view of one configured model.
 type PublicProfile struct {
 	ID            string `json:"id"`
@@ -255,11 +339,12 @@ type PublicProfile struct {
 
 // Public is the JSON shape returned to clients. API keys are never exposed.
 type Public struct {
-	ActiveID  string          `json:"active_id"`
-	BaseURL   string          `json:"base_url"`
-	Model     string          `json:"model"`
-	APIKeySet bool            `json:"api_key_set"`
-	Profiles  []PublicProfile `json:"profiles"`
+	ActiveID       string          `json:"active_id"`
+	BaseURL        string          `json:"base_url"`
+	Model          string          `json:"model"`
+	APIKeySet      bool            `json:"api_key_set"`
+	Profiles       []PublicProfile `json:"profiles"`
+	ThinkingEffort string          `json:"thinking_effort,omitempty"`
 }
 
 func (l LLM) publicProfile() PublicProfile {

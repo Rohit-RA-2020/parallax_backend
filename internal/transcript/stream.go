@@ -194,12 +194,12 @@ func (x *Indexer) upsertSegmentIndexes(ctx context.Context, projectID string, do
 	if len(vectors) == 0 {
 		return fmt.Errorf("embed: no vectors returned")
 	}
-	collection := qdrant.CollectionName(projectID)
+	collection := x.Qdrant.CollectionName(projectID)
 	if err := x.Qdrant.EnsureCollection(ctx, collection, len(vectors[0])); err != nil {
 		return err
 	}
 	if clear {
-		if err := x.Qdrant.DeleteByPathAndKind(ctx, collection, doc.Path, KindTranscript, true); err != nil {
+		if err := x.Qdrant.DeleteProjectPathAndKind(ctx, collection, projectID, doc.Path, KindTranscript, true); err != nil {
 			return err
 		}
 	}
@@ -212,7 +212,8 @@ func (x *Indexer) upsertSegmentIndexes(ctx context.Context, projectID string, do
 		points = append(points, qdrant.Point{
 			ID:     qdrant.PointID(doc.ContentHash, id),
 			Vector: vectors[i],
-			Payload: map[string]any{
+			Payload: x.scopedPayload(projectID, map[string]any{
+				"project_id":   projectID,
 				"kind":         KindTranscript,
 				"content_hash": doc.ContentHash,
 				"path":         doc.Path,
@@ -222,7 +223,7 @@ func (x *Indexer) upsertSegmentIndexes(ctx context.Context, projectID string, do
 				"text_en":      seg.TextEN,
 				"language":     doc.Language,
 				"segment_id":   id,
-			},
+			}),
 		})
 	}
 	return x.Qdrant.Upsert(ctx, collection, points)

@@ -1,6 +1,7 @@
 package preview
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -124,6 +125,20 @@ func (b *Builder) Statuses(projectID string) map[string]Status {
 		return out
 	}
 	if b.Projects != nil {
+		if b.Projects.IsPostgres() {
+			for _, role := range []string{"preview", "poster", "filmstrip"} {
+				metadata, err := b.Projects.DerivativeMetadata(context.Background(), projectID, role)
+				if err != nil {
+					continue
+				}
+				for path, body := range metadata {
+					var st Status
+					if json.Unmarshal(body, &st) == nil && st.Path != "" {
+						out[path] = st
+					}
+				}
+			}
+		}
 		if project, err := b.Projects.Get(projectID); err == nil {
 			for path, st := range readStatusFile(project.Dir) {
 				out[path] = st

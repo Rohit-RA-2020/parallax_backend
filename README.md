@@ -7,6 +7,13 @@ Go service for the Parallax media agent. A user describes a video/audio/image ta
 The React frontend is wired to this service for projects, uploads, project media,
 and streamed Director sessions.
 
+Production requires managed Supabase email/password Auth, self-hosted
+PostgreSQL, and Qdrant. PostgreSQL plus the VM's persistent `parallax_media`
+volume are authoritative; the separate local workspace is only a bounded,
+reconstructable FFmpeg and resumable-upload cache. See
+[DEPLOYMENT.md](DEPLOYMENT.md) for setup, security, upgrades, and recovery
+limitations.
+
 ## Design
 
 ```
@@ -330,9 +337,9 @@ Events:
 | `error`       | `{message}` |
 
 Pass `session_id` on the next request to continue the same conversation. Project
-chats are written under `.parallax/chats/` and survive server restarts. The
-sequence is stored as `.parallax/timeline.json` with integer frame times at the
-project fps, source in-points, and media paths (not playback URLs).
+chats, agent traces, and immutable timeline revisions are stored in PostgreSQL.
+Timeline schema v3 uses integer frame times and stable asset UUIDs; compatibility
+responses may also contain logical media paths, never physical storage paths.
 
 ## Tools
 

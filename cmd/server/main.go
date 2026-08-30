@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"parallax/internal/agent"
+	"parallax/internal/auth"
 	"parallax/internal/config"
+	"parallax/internal/database"
 	"parallax/internal/elevenlabs"
 	"parallax/internal/embed"
 	"parallax/internal/ffmpeg"
@@ -18,6 +20,7 @@ import (
 	"parallax/internal/gifs"
 	"parallax/internal/httpapi"
 	"parallax/internal/llm"
+	"parallax/internal/objectstore"
 	"parallax/internal/preview"
 	"parallax/internal/projects"
 	"parallax/internal/qdrant"
@@ -32,6 +35,26 @@ func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Error("config", "err", err)
+		os.Exit(1)
+	}
+	if err := cfg.ValidateInfrastructure(); err != nil {
+		log.Error("infrastructure config", "err", err)
+		os.Exit(1)
+	}
+	db, err := database.Open(context.Background(), cfg.DatabaseURL, log)
+	if err != nil {
+		log.Error("postgres", "err", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+	objects, err := objectstore.New(cfg.MediaStorageDir)
+	if err != nil {
+		log.Error("durable media storage", "err", err)
+		os.Exit(1)
+	}
+	authenticator, err := auth.New(context.Background(), auth.Config{JWKSURL: cfg.SupabaseJWKSURL, Issuer: cfg.SupabaseIssuer, Audience: cfg.SupabaseAudience, MediaSecret: cfg.MediaCookieSecret, MediaCookieSecure: cfg.MediaCookieSecure}, db.Pool)
+	if err != nil {
+		log.Error("supabase auth", "err", err)
 		os.Exit(1)
 	}
 
@@ -80,12 +103,14 @@ func main() {
 		BaseURL:   cfg.GeminiBaseURL,
 		Model:     cfg.GeminiImageModel,
 	})
-	projectStore, err := projects.NewStore(cfg.WorkspaceDir + "/projects")
+	projectStore, err := projects.NewPostgresStore(cfg.WorkspaceDir+"/projects", db.Pool, objects)
 	if err != nil {
 		log.Error("projects", "err", err)
 		os.Exit(1)
 	}
-	settings := config.NewStore(cfg.SettingsPath, cfg.LLMs)
+	// Production model profiles are immutable environment configuration. User
+	// selections live in user_preferences, never in the old global settings file.
+	settings := config.NewStore("", cfg.LLMs)
 	var geminiMusic *gemini.Client
 	if cfg.GeminiAPIKey != "" {
 		geminiMusic = gemini.NewClient(cfg.GeminiAPIKey, cfg.GeminiBaseURL, 15*time.Minute, 256<<20)
@@ -103,8 +128,9 @@ func main() {
 	}
 	idx := &transcript.Indexer{
 		Projects: projectStore,
+		Database: db,
 		Bins:     bins,
-		Qdrant:   qdrant.NewClient(cfg.QdrantURL, cfg.QdrantAPIKey),
+		Qdrant:   qdrant.NewSharedClient(cfg.QdrantURL, cfg.QdrantAPIKey, cfg.QdrantCollection),
 		Completer: func() llm.Completer {
 			return llm.NewCompatClient(settings.Get().BaseURL, settings.Get().APIKey, settings.Get().Model)
 		},
@@ -133,9 +159,10 @@ func main() {
 	previews.Start()
 	uploads, err := httpapi.NewUploadManager(httpapi.UploadManagerConfig{
 		Workspace: cfg.WorkspaceDir, Projects: projectStore, Bins: bins, Logger: log,
-		MaxSize: cfg.MaxUploadBytes, Expiry: cfg.UploadExpiry,
+		MaxSize: cfg.MaxUploadBytes, MaxTempBytes: cfg.TempMaxBytes, Expiry: cfg.UploadExpiry,
 		StatusRetention: cfg.UploadStatusRetention,
 		MaxActive:       cfg.MaxActiveUploads, MaxPerProject: cfg.MaxProjectUploads,
+		Database: db,
 		OnReady: func(projectID string, media projects.Media, uploadMs int64) {
 			indexer.NoteUpload(projectID, media.Path, uploadMs)
 			indexer.Enqueue(projectID, media.Path)
@@ -185,6 +212,10 @@ func main() {
 		YouTubeMaxBytes:         cfg.YouTubeMaxDownloadBytes,
 		YouTubeYTDLPBin:         cfg.YouTubeYTDLPBin,
 		Uploads:                 uploads,
+		Auth:                    authenticator,
+		Database:                db,
+		Objects:                 objects,
+		AllowedOrigins:          cfg.AllowedOrigins,
 		NewLLM: func(l config.LLM) llm.ChatProvider {
 			return llm.NewCompatClient(l.BaseURL, l.APIKey, l.Model)
 		},
@@ -202,6 +233,7 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go runPurgeWorker(ctx, db, objects, uploads, indexer, cfg.WorkspaceDir, log)
 
 	go func() {
 		log.Info("parallax listening",

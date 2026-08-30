@@ -1,6 +1,7 @@
 package projects
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,10 +11,13 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 const (
-	timelineSchema     = 2
+	timelineSchema     = 3
 	timelineDefaultFPS = 24
 	timelineMaxClips   = 2000
 	timelineMaxName    = 200
@@ -131,6 +135,7 @@ type TimelineTransition struct {
 // TimelineClip is one record-side item. SourceInFrame is the media in-point.
 type TimelineClip struct {
 	ID                   string             `json:"id"`
+	AssetID              string             `json:"asset_id,omitempty"`
 	Name                 string             `json:"name"`
 	Track                string             `json:"track"`
 	Kind                 string             `json:"kind"`
@@ -163,6 +168,27 @@ func emptyTimeline() Timeline {
 }
 
 func (s *Store) GetTimeline(projectID string) (Timeline, error) {
+	if s.pg != nil {
+		if _, err := s.Get(projectID); err != nil {
+			return Timeline{}, err
+		}
+		var body []byte
+		err := s.pg.QueryRow(context.Background(), `SELECT r.timeline FROM projects p JOIN project_revisions r ON r.project_id=p.id AND r.revision_no=p.head_revision_no WHERE p.id=$1 AND p.state='active'`, projectID).Scan(&body)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Timeline{}, ErrNotFound
+		}
+		if err != nil {
+			return Timeline{}, err
+		}
+		var doc Timeline
+		if err = json.Unmarshal(body, &doc); err != nil {
+			return Timeline{}, fmt.Errorf("%w: %v", ErrInvalidTimeline, err)
+		}
+		if doc.Clips == nil {
+			doc.Clips = []TimelineClip{}
+		}
+		return doc, nil
+	}
 	p, err := s.Get(projectID)
 	if err != nil {
 		return Timeline{}, err
@@ -193,6 +219,9 @@ func (s *Store) CommitTimelineAndMedia(projectID string, doc Timeline, expected 
 }
 
 func (s *Store) saveTimelineCommit(projectID string, doc Timeline, expected int, meta CommitMeta, captureMedia bool) (Timeline, error) {
+	if s.pg != nil {
+		return s.savePGTimelineCommit(context.Background(), projectID, doc, expected, meta, captureMedia)
+	}
 	p, err := s.Get(projectID)
 	if err != nil {
 		return Timeline{}, err
@@ -266,6 +295,90 @@ func (s *Store) saveTimelineCommit(projectID string, doc Timeline, expected int,
 	return normalized, nil
 }
 
+func (s *Store) savePGTimelineCommit(ctx context.Context, projectID string, doc Timeline, expected int, meta CommitMeta, captureMedia bool) (Timeline, error) {
+	project, err := s.Get(projectID)
+	if err != nil {
+		return Timeline{}, err
+	}
+	normalized, err := normalizeTimeline(doc)
+	if err != nil {
+		return Timeline{}, err
+	}
+	// Compatibility clients may still submit media_path. Resolve it once at
+	// commit time and persist the stable asset UUID required by schema v3.
+	for i := range normalized.Clips {
+		clip := &normalized.Clips[i]
+		if clip.AssetID != "" || strings.TrimSpace(clip.MediaPath) == "" {
+			continue
+		}
+		err = s.pg.QueryRow(ctx, `SELECT id FROM assets WHERE project_id=$1 AND logical_path=$2 AND deleted_at IS NULL`, projectID, filepath.ToSlash(clip.MediaPath)).Scan(&clip.AssetID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Timeline{}, fmt.Errorf("%w: clip %q references unknown asset", ErrInvalidTimeline, clip.ID)
+		}
+		if err != nil {
+			return Timeline{}, err
+		}
+	}
+	tx, err := s.pg.Begin(ctx)
+	if err != nil {
+		return Timeline{}, err
+	}
+	defer tx.Rollback(ctx)
+	var head int64
+	query := `SELECT head_revision_no FROM projects WHERE id=$1 AND state='active'`
+	args := []any{projectID}
+	if s.ownerID != uuid.Nil {
+		query += ` AND owner_id=$2`
+		args = append(args, s.ownerID)
+	}
+	query += ` FOR UPDATE`
+	if err = tx.QueryRow(ctx, query, args...).Scan(&head); errors.Is(err, pgx.ErrNoRows) {
+		return Timeline{}, ErrNotFound
+	} else if err != nil {
+		return Timeline{}, err
+	}
+	if expected >= 0 && int64(expected) != head {
+		return Timeline{}, fmt.Errorf("%w: expected %d, current %d", ErrRevisionConflict, expected, head)
+	}
+	// Tools and FFmpeg operate in a reconstructable local workspace. Import any
+	// new or changed durable outputs while the project row is locked so the
+	// revision below captures exactly the versions produced by this operation.
+	if captureMedia {
+		if err = s.syncPGWorkspace(ctx, tx, project); err != nil {
+			return Timeline{}, err
+		}
+	}
+	var next int64
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(max(revision_no),-1)+1 FROM project_revisions WHERE project_id=$1`, projectID).Scan(&next); err != nil {
+		return Timeline{}, err
+	}
+	normalized.Schema = timelineSchema
+	normalized.Revision = int(next)
+	normalized.UpdatedAt = time.Now().UTC()
+	body, err := json.Marshal(normalized)
+	if err != nil {
+		return Timeline{}, err
+	}
+	meta = normalizeMeta(meta)
+	var actor any
+	if s.ownerID != uuid.Nil {
+		actor = s.ownerID
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO project_revisions(project_id,revision_no,parent_revision_no,actor_type,actor_user_id,summary,chat_id,timeline) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,'')::uuid,$8)`, projectID, next, head, meta.Actor, actor, meta.Summary, meta.ChatID, body); err != nil {
+		return Timeline{}, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO revision_assets(project_id,revision_no,asset_id,asset_version_id,logical_path,display_name,present) SELECT $1,$2,id,current_version_id,logical_path,display_name,deleted_at IS NULL FROM assets WHERE project_id=$1 AND current_version_id IS NOT NULL`, projectID, next); err != nil {
+		return Timeline{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE projects SET head_revision_no=$2,updated_at=now() WHERE id=$1`, projectID, next); err != nil {
+		return Timeline{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return Timeline{}, err
+	}
+	return normalized, nil
+}
+
 func timelinePath(p Project) string {
 	return filepath.Join(p.Dir, ".parallax", "timeline.json")
 }
@@ -327,6 +440,9 @@ func normalizeTimeline(doc Timeline) (Timeline, error) {
 		doc.Schema = timelineSchema
 	}
 	if doc.Schema == 1 {
+		doc.Schema = timelineSchema
+	}
+	if doc.Schema == 2 {
 		doc.Schema = timelineSchema
 	}
 	if doc.Schema != timelineSchema {

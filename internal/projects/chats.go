@@ -1,6 +1,7 @@
 package projects
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/url"
@@ -12,6 +13,9 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"parallax/internal/llm"
 )
@@ -42,6 +46,25 @@ type chatIndex struct {
 }
 
 func (s *Store) ListChats(projectID string) ([]ChatMeta, error) {
+	if s.pg != nil {
+		if _, err := s.Get(projectID); err != nil {
+			return nil, err
+		}
+		rows, err := s.pg.Query(context.Background(), `SELECT id,title,created_at,updated_at FROM chats WHERE project_id=$1 ORDER BY updated_at DESC`, projectID)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		out := []ChatMeta{}
+		for rows.Next() {
+			var m ChatMeta
+			if err = rows.Scan(&m.ID, &m.Title, &m.CreatedAt, &m.UpdatedAt); err != nil {
+				return nil, err
+			}
+			out = append(out, m)
+		}
+		return out, rows.Err()
+	}
 	p, err := s.Get(projectID)
 	if err != nil {
 		return nil, err
@@ -58,6 +81,21 @@ func (s *Store) ListChats(projectID string) ([]ChatMeta, error) {
 }
 
 func (s *Store) CreateChat(projectID, title string) (Chat, error) {
+	if s.pg != nil {
+		p, err := s.Get(projectID)
+		if err != nil {
+			return Chat{}, err
+		}
+		id := uuid.New()
+		owner, err := uuid.Parse(p.OwnerID)
+		if err != nil {
+			return Chat{}, err
+		}
+		now := time.Now().UTC()
+		c := Chat{ChatMeta: ChatMeta{ID: id.String(), Title: chatTitle(title, nil), CreatedAt: now, UpdatedAt: now}, Messages: []llm.Message{}}
+		_, err = s.pg.Exec(context.Background(), `INSERT INTO chats(id,project_id,created_by,title,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$5)`, id, projectID, owner, c.Title, now)
+		return c, err
+	}
 	p, err := s.Get(projectID)
 	if err != nil {
 		return Chat{}, err
@@ -88,6 +126,35 @@ func (s *Store) CreateChat(projectID, title string) (Chat, error) {
 // so existing chat files remain readable and repeated response text does not
 // collide.
 func (s *Store) SetChatResponseMetadata(projectID, chatID string, msgs []llm.Message, durationMS int64, trace []ChatTraceEvent) error {
+	if s.pg != nil {
+		if _, err := s.Get(projectID); err != nil {
+			return err
+		}
+		index := -1
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgs[i].Role == llm.RoleAssistant && strings.TrimSpace(msgs[i].Content) != "" {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			return nil
+		}
+		_, err := s.pg.Exec(context.Background(), `UPDATE chat_messages SET response_duration_ms=$4 WHERE id=(SELECT id FROM chat_messages WHERE chat_id=$1 AND sequence_no=$2) AND EXISTS(SELECT 1 FROM chats WHERE id=$1 AND project_id=$3)`, chatID, index, projectID, durationMS)
+		if err != nil {
+			return err
+		}
+		if len(trace) > 0 {
+			runID := uuid.New()
+			p, _ := s.Get(projectID)
+			owner, _ := uuid.Parse(p.OwnerID)
+			_, _ = s.pg.Exec(context.Background(), `INSERT INTO agent_runs(id,project_id,chat_id,user_id,state,started_at,completed_at) VALUES($1,$2,$3,$4,'completed',now(),now())`, runID, projectID, chatID, owner)
+			for i, event := range trace {
+				_, _ = s.pg.Exec(context.Background(), `INSERT INTO agent_events(run_id,sequence_no,event_type,payload) VALUES($1,$2,$3,$4)`, runID, i, event.Type, event.Data)
+			}
+		}
+		return nil
+	}
 	if durationMS < 0 {
 		durationMS = 0
 	}
@@ -125,6 +192,43 @@ func (s *Store) SetChatResponseMetadata(projectID, chatID string, msgs []llm.Mes
 }
 
 func (s *Store) GetChat(projectID, chatID string) (Chat, error) {
+	if s.pg != nil {
+		if _, err := s.Get(projectID); err != nil {
+			return Chat{}, err
+		}
+		var c Chat
+		err := s.pg.QueryRow(context.Background(), `SELECT id,title,created_at,updated_at FROM chats WHERE id=$1 AND project_id=$2`, chatID, projectID).Scan(&c.ID, &c.Title, &c.CreatedAt, &c.UpdatedAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Chat{}, ErrChatNotFound
+		}
+		if err != nil {
+			return Chat{}, err
+		}
+		rows, err := s.pg.Query(context.Background(), `SELECT sequence_no,message,response_duration_ms FROM chat_messages WHERE chat_id=$1 ORDER BY sequence_no`, chatID)
+		if err != nil {
+			return Chat{}, err
+		}
+		defer rows.Close()
+		c.Messages = []llm.Message{}
+		c.ResponseDurations = map[string]int64{}
+		for rows.Next() {
+			var seq int
+			var body []byte
+			var duration *int64
+			if err = rows.Scan(&seq, &body, &duration); err != nil {
+				return Chat{}, err
+			}
+			var msg llm.Message
+			if err = json.Unmarshal(body, &msg); err != nil {
+				return Chat{}, err
+			}
+			c.Messages = append(c.Messages, msg)
+			if duration != nil {
+				c.ResponseDurations[strconv.Itoa(seq)] = *duration
+			}
+		}
+		return c, rows.Err()
+	}
 	p, err := s.Get(projectID)
 	if err != nil {
 		return Chat{}, err
@@ -135,6 +239,18 @@ func (s *Store) GetChat(projectID, chatID string) (Chat, error) {
 }
 
 func (s *Store) GetOrCreateChat(projectID, chatID string) (Chat, error) {
+	if s.pg != nil {
+		if strings.TrimSpace(chatID) != "" {
+			c, err := s.GetChat(projectID, chatID)
+			if err == nil {
+				return c, nil
+			}
+			if !errors.Is(err, ErrChatNotFound) {
+				return Chat{}, err
+			}
+		}
+		return s.CreateChat(projectID, "")
+	}
 	p, err := s.Get(projectID)
 	if err != nil {
 		return Chat{}, err
@@ -170,6 +286,52 @@ func (s *Store) GetOrCreateChat(projectID, chatID string) (Chat, error) {
 }
 
 func (s *Store) SaveChatMessages(projectID, chatID string, msgs []llm.Message) (Chat, error) {
+	if s.pg != nil {
+		c, err := s.GetChat(projectID, chatID)
+		if err != nil {
+			return Chat{}, err
+		}
+		tx, err := s.pg.Begin(context.Background())
+		if err != nil {
+			return Chat{}, err
+		}
+		defer tx.Rollback(context.Background())
+		if _, err = tx.Exec(context.Background(), `DELETE FROM chat_messages WHERE chat_id=$1`, chatID); err != nil {
+			return Chat{}, err
+		}
+		for i, msg := range msgs {
+			body, mErr := json.Marshal(msg)
+			if mErr != nil {
+				return Chat{}, mErr
+			}
+			messageID := uuid.New()
+			if _, err = tx.Exec(context.Background(), `INSERT INTO chat_messages(id,chat_id,sequence_no,role,message) VALUES($1,$2,$3,$4,$5)`, messageID, chatID, i, msg.Role, body); err != nil {
+				return Chat{}, err
+			}
+			for _, image := range msg.Images {
+				path := filepath.ToSlash(strings.TrimSpace(image.Path))
+				if path == "" {
+					continue
+				}
+				_, err = tx.Exec(context.Background(), `INSERT INTO chat_attachments(id,message_id,storage_object_id,name,mime_type)
+					SELECT $1,$2,v.storage_object_id,$3,$4 FROM assets a JOIN asset_versions v ON v.id=a.current_version_id WHERE a.project_id=$5 AND a.logical_path=$6 AND a.deleted_at IS NULL`, uuid.New(), messageID, image.Name, image.MIME, projectID, path)
+				if err != nil {
+					return Chat{}, err
+				}
+			}
+		}
+		title := chatTitle(c.Title, msgs)
+		if _, err = tx.Exec(context.Background(), `UPDATE chats SET title=$2,updated_at=now() WHERE id=$1`, chatID, title); err != nil {
+			return Chat{}, err
+		}
+		if err = tx.Commit(context.Background()); err != nil {
+			return Chat{}, err
+		}
+		c.Messages = append([]llm.Message(nil), msgs...)
+		c.Title = title
+		c.UpdatedAt = time.Now().UTC()
+		return c, nil
+	}
 	p, err := s.Get(projectID)
 	if err != nil {
 		return Chat{}, err
@@ -203,6 +365,19 @@ func (s *Store) RenameChat(projectID, chatID, title string) (Chat, error) {
 	if utf8.RuneCountInString(title) > 80 {
 		return Chat{}, errors.New("chat title is too long")
 	}
+	if s.pg != nil {
+		if _, err := s.Get(projectID); err != nil {
+			return Chat{}, err
+		}
+		result, err := s.pg.Exec(context.Background(), `UPDATE chats SET title=$3,updated_at=now() WHERE id=$1 AND project_id=$2`, chatID, projectID, title)
+		if err != nil {
+			return Chat{}, err
+		}
+		if result.RowsAffected() == 0 {
+			return Chat{}, ErrChatNotFound
+		}
+		return s.GetChat(projectID, chatID)
+	}
 	p, err := s.Get(projectID)
 	if err != nil {
 		return Chat{}, err
@@ -225,6 +400,19 @@ func (s *Store) RenameChat(projectID, chatID, title string) (Chat, error) {
 }
 
 func (s *Store) DeleteChat(projectID, chatID string) error {
+	if s.pg != nil {
+		if _, err := s.Get(projectID); err != nil {
+			return err
+		}
+		result, err := s.pg.Exec(context.Background(), `DELETE FROM chats WHERE id=$1 AND project_id=$2`, chatID, projectID)
+		if err != nil {
+			return err
+		}
+		if result.RowsAffected() == 0 {
+			return ErrChatNotFound
+		}
+		return nil
+	}
 	p, err := s.Get(projectID)
 	if err != nil {
 		return err

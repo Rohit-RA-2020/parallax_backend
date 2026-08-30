@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -9,12 +10,15 @@ import (
 	"time"
 
 	"parallax/internal/agent"
+	"parallax/internal/auth"
 	"parallax/internal/config"
+	"parallax/internal/database"
 	"parallax/internal/elevenlabs"
 	"parallax/internal/ffmpeg"
 	"parallax/internal/gemini"
 	"parallax/internal/gifs"
 	"parallax/internal/llm"
+	"parallax/internal/objectstore"
 	"parallax/internal/preview"
 	"parallax/internal/projects"
 	"parallax/internal/tools"
@@ -65,6 +69,10 @@ type Server struct {
 	YouTubeMaxBytes         int64
 	YouTubeYTDLPBin         string
 	Uploads                 *UploadManager
+	Auth                    *auth.Authenticator
+	Database                *database.DB
+	Objects                 *objectstore.Client
+	AllowedOrigins          []string
 }
 
 func (s *Server) indexMedia(projectID, rel string) {
@@ -123,7 +131,18 @@ func (s *Server) log() *slog.Logger {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", s.handleHealth)
+	// Backward-compatible liveness alias.
+	mux.HandleFunc("GET /health", s.handleLiveness)
+	mux.HandleFunc("GET /health/live", s.handleLiveness)
+	mux.HandleFunc("GET /health/ready", s.handleReadiness)
+	mux.HandleFunc("POST /v1/auth/media-session", s.handleMediaSession)
+	mux.HandleFunc("DELETE /v1/auth/media-session", s.handleClearMediaSession)
+	if s.Auth != nil && s.Objects != nil && s.Database != nil {
+		mux.HandleFunc("GET /v1/media/objects/{objectId}", s.handleMediaObject)
+		mux.HandleFunc("HEAD /v1/media/objects/{objectId}", s.handleMediaObject)
+		mux.HandleFunc("GET /v1/media/{versionId}", s.handleMediaContent)
+		mux.HandleFunc("HEAD /v1/media/{versionId}", s.handleMediaContent)
+	}
 	if s.Uploads != nil {
 		mux.Handle("/v1/uploads", http.StripPrefix("/v1/uploads", s.Uploads.Handler()))
 		mux.Handle("/v1/uploads/", http.StripPrefix("/v1/uploads", s.Uploads.Handler()))
@@ -140,35 +159,74 @@ func (s *Server) Handler() http.Handler {
 	if s.Projects != nil {
 		mux.HandleFunc("GET /v1/projects", s.handleListProjects)
 		mux.HandleFunc("POST /v1/projects", s.handleCreateProject)
-		mux.HandleFunc("GET /v1/projects/{id}", s.handleGetProject)
-		mux.HandleFunc("DELETE /v1/projects/{id}", s.handleDeleteProject)
-		mux.HandleFunc("GET /v1/projects/{id}/media/search", s.handleSearchMedia)
-		mux.HandleFunc("GET /v1/projects/{id}/media", s.handleListMedia)
-		mux.HandleFunc("POST /v1/projects/{id}/media/describe", s.handleDescribeMedia)
+		mux.HandleFunc("GET /v1/projects/{id}", s.projectAuthorized(s.handleGetProject))
+		mux.HandleFunc("DELETE /v1/projects/{id}", s.projectAuthorized(s.handleDeleteProject))
+		mux.HandleFunc("GET /v1/projects/{id}/media/search", s.projectAuthorized(s.handleSearchMedia))
+		mux.HandleFunc("GET /v1/projects/{id}/media", s.projectAuthorized(s.handleListMedia))
+		mux.HandleFunc("POST /v1/projects/{id}/media/describe", s.projectAuthorized(s.handleDescribeMedia))
 		if s.GIFs != nil {
-			mux.HandleFunc("POST /v1/projects/{id}/gifs/import", s.handleImportGIF)
+			mux.HandleFunc("POST /v1/projects/{id}/gifs/import", s.projectAuthorized(s.handleImportGIF))
 		}
-		mux.HandleFunc("POST /v1/projects/{id}/export", s.handleExport)
-		mux.HandleFunc("GET /v1/projects/{id}/files/{path...}", s.handleProjectFile)
-		mux.HandleFunc("DELETE /v1/projects/{id}/files/{path...}", s.handleDeleteProjectFile)
-		mux.HandleFunc("GET /v1/projects/{id}/chats", s.handleListChats)
-		mux.HandleFunc("POST /v1/projects/{id}/chats", s.handleCreateChat)
-		mux.HandleFunc("GET /v1/projects/{id}/chats/{chatId}", s.handleGetChat)
-		mux.HandleFunc("PATCH /v1/projects/{id}/chats/{chatId}", s.handlePatchChat)
-		mux.HandleFunc("DELETE /v1/projects/{id}/chats/{chatId}", s.handleDeleteChat)
-		mux.HandleFunc("GET /v1/projects/{id}/timeline", s.handleGetTimeline)
-		mux.HandleFunc("PUT /v1/projects/{id}/timeline", s.handlePutTimeline)
-		mux.HandleFunc("POST /v1/projects/{id}/visual-review", s.handleVisualReview)
-		mux.HandleFunc("GET /v1/projects/{id}/visual-reviews/{revision}", s.handleGetVisualReview)
-		mux.HandleFunc("GET /v1/projects/{id}/history", s.handleGetHistory)
-		mux.HandleFunc("POST /v1/projects/{id}/history/undo", s.handleUndoHistory)
-		mux.HandleFunc("POST /v1/projects/{id}/history/redo", s.handleRedoHistory)
-		mux.HandleFunc("POST /v1/projects/{id}/history/restore", s.handleRestoreHistory)
-		mux.HandleFunc("POST /v1/projects/{id}/checkpoints", s.handleCreateCheckpoint)
-		mux.HandleFunc("PATCH /v1/projects/{id}/checkpoints/{checkpoint}", s.handleRenameCheckpoint)
-		mux.HandleFunc("DELETE /v1/projects/{id}/checkpoints/{checkpoint}", s.handleDeleteCheckpoint)
+		mux.HandleFunc("POST /v1/projects/{id}/export", s.projectAuthorized(s.handleExport))
+		mux.HandleFunc("GET /v1/projects/{id}/files/{path...}", s.projectAuthorized(s.handleProjectFile))
+		mux.HandleFunc("DELETE /v1/projects/{id}/files/{path...}", s.projectAuthorized(s.handleDeleteProjectFile))
+		mux.HandleFunc("GET /v1/projects/{id}/chats", s.projectAuthorized(s.handleListChats))
+		mux.HandleFunc("POST /v1/projects/{id}/chats", s.projectAuthorized(s.handleCreateChat))
+		mux.HandleFunc("GET /v1/projects/{id}/chats/{chatId}", s.projectAuthorized(s.handleGetChat))
+		mux.HandleFunc("PATCH /v1/projects/{id}/chats/{chatId}", s.projectAuthorized(s.handlePatchChat))
+		mux.HandleFunc("DELETE /v1/projects/{id}/chats/{chatId}", s.projectAuthorized(s.handleDeleteChat))
+		mux.HandleFunc("GET /v1/projects/{id}/timeline", s.projectAuthorized(s.handleGetTimeline))
+		mux.HandleFunc("PUT /v1/projects/{id}/timeline", s.projectAuthorized(s.handlePutTimeline))
+		mux.HandleFunc("POST /v1/projects/{id}/visual-review", s.projectAuthorized(s.handleVisualReview))
+		mux.HandleFunc("GET /v1/projects/{id}/visual-reviews/{revision}", s.projectAuthorized(s.handleGetVisualReview))
+		mux.HandleFunc("GET /v1/projects/{id}/history", s.projectAuthorized(s.handleGetHistory))
+		mux.HandleFunc("POST /v1/projects/{id}/history/undo", s.projectAuthorized(s.handleUndoHistory))
+		mux.HandleFunc("POST /v1/projects/{id}/history/redo", s.projectAuthorized(s.handleRedoHistory))
+		mux.HandleFunc("POST /v1/projects/{id}/history/restore", s.projectAuthorized(s.handleRestoreHistory))
+		mux.HandleFunc("POST /v1/projects/{id}/checkpoints", s.projectAuthorized(s.handleCreateCheckpoint))
+		mux.HandleFunc("PATCH /v1/projects/{id}/checkpoints/{checkpoint}", s.projectAuthorized(s.handleRenameCheckpoint))
+		mux.HandleFunc("DELETE /v1/projects/{id}/checkpoints/{checkpoint}", s.projectAuthorized(s.handleDeleteCheckpoint))
 	}
-	return withCORS(withLog(s.log(), mux))
+	var handler http.Handler = mux
+	if s.Auth != nil {
+		handler = s.authenticateExceptPublic(handler)
+	}
+	return withCORS(s.AllowedOrigins, withLog(s.log(), handler))
+}
+
+func (s *Server) authenticateExceptPublic(next http.Handler) http.Handler {
+	protected := s.Auth.Middleware(next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if path == "/health" || strings.HasPrefix(path, "/health/") || strings.HasPrefix(path, "/v1/media/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		protected.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) projectAuthorized(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.Auth != nil && s.Database != nil {
+			user, ok := auth.UserFrom(r.Context())
+			if !ok {
+				writeError(w, http.StatusUnauthorized, "authentication required")
+				return
+			}
+			var exists bool
+			err := s.Database.Pool.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1 AND owner_id=$2 AND state='active')`, r.PathValue("id"), user.ID).Scan(&exists)
+			if err != nil {
+				writeError(w, http.StatusServiceUnavailable, "database unavailable")
+				return
+			}
+			if !exists {
+				writeError(w, http.StatusNotFound, "project not found")
+				return
+			}
+		}
+		next(w, r)
+	}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -191,13 +249,65 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, body)
 }
 
-func (s *Server) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.Settings.Public())
+func (s *Server) handleLiveness(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	var unavailable []string
+	if s.Database != nil {
+		if err := s.Database.Ready(ctx); err != nil {
+			unavailable = append(unavailable, "postgres")
+		}
+	}
+	if s.Objects != nil {
+		if err := s.Objects.Ready(ctx); err != nil {
+			unavailable = append(unavailable, "media_storage")
+		}
+	}
+	if s.Indexer == nil || s.Indexer.Qdrant == nil {
+		writeError(w, http.StatusServiceUnavailable, "qdrant is not configured")
+		return
+	}
+	if err := s.Indexer.Qdrant.Ready(ctx); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "qdrant is unavailable")
+		return
+	}
+	if len(unavailable) > 0 {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "unavailable": unavailable})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	public := s.Settings.Public()
+	if s.Database != nil {
+		if user, ok := auth.UserFrom(r.Context()); ok {
+			var active, effort string
+			err := s.Database.Pool.QueryRow(r.Context(), `SELECT active_llm_profile_id,thinking_effort FROM user_preferences WHERE user_id=$1`, user.ID).Scan(&active, &effort)
+			if err == nil && active != "" {
+				public.ActiveID = active
+				if profile, pErr := s.Settings.GetByID(active); pErr == nil {
+					public.BaseURL = profile.BaseURL
+					public.Model = profile.Model
+					public.APIKeySet = strings.TrimSpace(profile.APIKey) != ""
+				}
+			}
+			if effort != "" {
+				public.ThinkingEffort = effort
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, public)
 }
 
 func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		ActiveID string `json:"active_id"`
+		ActiveID       string `json:"active_id"`
+		ThinkingEffort string `json:"thinking_effort"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -205,6 +315,33 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(body.ActiveID) == "" {
 		writeError(w, http.StatusBadRequest, "active_id is required")
+		return
+	}
+	if s.Database != nil {
+		user, ok := auth.UserFrom(r.Context())
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		if _, err := s.Settings.GetByID(body.ActiveID); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		effort := strings.TrimSpace(body.ThinkingEffort)
+		hasEffort := effort != ""
+		if effort == "" {
+			effort = "medium"
+		}
+		if _, err := llm.NormalizeThinkingEffort(effort); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		_, err := s.Database.Pool.Exec(r.Context(), `INSERT INTO user_preferences(user_id,active_llm_profile_id,thinking_effort) VALUES($1,$2,$3) ON CONFLICT(user_id) DO UPDATE SET active_llm_profile_id=EXCLUDED.active_llm_profile_id,thinking_effort=CASE WHEN $4 THEN EXCLUDED.thinking_effort ELSE user_preferences.thinking_effort END,updated_at=now()`, user.ID, body.ActiveID, effort, hasEffort)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "database unavailable")
+			return
+		}
+		s.handleGetSettings(w, r)
 		return
 	}
 	if _, err := s.Settings.Select(body.ActiveID); err != nil {
@@ -250,6 +387,19 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if (strings.TrimSpace(req.ProfileID) == "" || strings.TrimSpace(req.ThinkingEffort) == "") && s.Database != nil {
+		if user, ok := auth.UserFrom(r.Context()); ok {
+			var profileID, effort string
+			if s.Database.Pool.QueryRow(r.Context(), `SELECT active_llm_profile_id,thinking_effort FROM user_preferences WHERE user_id=$1`, user.ID).Scan(&profileID, &effort) == nil {
+				if strings.TrimSpace(req.ProfileID) == "" {
+					req.ProfileID = profileID
+				}
+				if strings.TrimSpace(req.ThinkingEffort) == "" {
+					req.ThinkingEffort = effort
+				}
+			}
+		}
+	}
 	llmCfg, err := s.Settings.GetByID(req.ProfileID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -268,6 +418,21 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	toolRegistry := s.Tools
 	projectID := strings.TrimSpace(req.ProjectID)
+	if s.Auth != nil && projectID == "" {
+		writeError(w, http.StatusBadRequest, "project_id is required")
+		return
+	}
+	if s.Auth != nil && projectID != "" {
+		user, ok := auth.UserFrom(r.Context())
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		if _, err := s.Projects.ForOwner(user.ID).Get(projectID); err != nil {
+			writeError(w, http.StatusNotFound, "project not found")
+			return
+		}
+	}
 	attached, attachErr := s.saveChatImages(projectID, req.Images)
 	if attachErr != nil {
 		writeError(w, http.StatusBadRequest, attachErr.Error())
@@ -543,6 +708,14 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
 	}
+	if s.Auth != nil {
+		user, hasUser := auth.UserFrom(r.Context())
+		var owned bool
+		if !hasUser || s.Database.Pool.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1 AND owner_id=$2 AND state='active')`, sess.ProjectID, user.ID).Scan(&owned) != nil || !owned {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":         sess.ID,
 		"updated_at": sess.UpdatedAt,
@@ -551,27 +724,57 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	if s.Auth != nil {
+		sess, ok := s.Sessions.Get(r.PathValue("id"))
+		if !ok {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		user, hasUser := auth.UserFrom(r.Context())
+		var owned bool
+		if !hasUser || s.Database.Pool.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1 AND owner_id=$2 AND state='active')`, sess.ProjectID, user.ID).Scan(&owned) != nil || !owned {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
+	}
 	s.Sessions.Delete(r.PathValue("id"))
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func withCORS(next http.Handler) http.Handler {
+func withCORS(allowed []string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/v1/uploads") {
-			next.ServeHTTP(w, r)
-			return
-		}
 		h := w.Header()
-		h.Set("Access-Control-Allow-Origin", "*")
-		h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Expected-Revision, X-Change-Summary, Range")
-		h.Set("Access-Control-Allow-Methods", "GET, PUT, POST, PATCH, DELETE, OPTIONS")
-		h.Set("Access-Control-Expose-Headers", "Accept-Ranges, Content-Range, Content-Length, Content-Type")
+		origin := r.Header.Get("Origin")
+		if origin != "" && originAllowed(origin, allowed) {
+			h.Set("Access-Control-Allow-Origin", origin)
+			h.Set("Access-Control-Allow-Credentials", "true")
+			h.Add("Vary", "Origin")
+		}
+		h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Expected-Revision, X-Change-Summary, Range, Tus-Resumable, Upload-Length, Upload-Metadata, Upload-Offset, Upload-Defer-Length")
+		h.Set("Access-Control-Allow-Methods", "GET, HEAD, PUT, POST, PATCH, DELETE, OPTIONS")
+		h.Set("Access-Control-Expose-Headers", "Accept-Ranges, Content-Range, Content-Length, Content-Type, Upload-Offset, Upload-Length, Location, Tus-Resumable")
 		if r.Method == http.MethodOptions {
+			if strings.HasPrefix(r.URL.Path, "/v1/uploads") {
+				h.Set("Tus-Version", "1.0.0")
+				h.Set("Tus-Extension", "termination")
+			}
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func originAllowed(origin string, allowed []string) bool {
+	if len(allowed) == 0 {
+		return origin == "http://localhost:5173" || origin == "http://127.0.0.1:5173"
+	}
+	for _, item := range allowed {
+		if item == origin {
+			return true
+		}
+	}
+	return false
 }
 
 func withLog(log *slog.Logger, next http.Handler) http.Handler {
