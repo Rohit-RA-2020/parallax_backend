@@ -72,10 +72,12 @@ unavailable; liveness remains available while the process is running.
 ### NVIDIA GPU encoding
 
 `FFMPEG_HWACCEL=auto` probes only GPUs already visible inside the backend
-container; it does not make a host GPU available. The bootstrap script installs
-and configures the NVIDIA Container Toolkit automatically when `nvidia-smi`
-works on the host. For a manual deployment, install the toolkit, then start the
-optional override:
+container; it does not make a host GPU available. When `nvidia-smi` works, the
+bootstrap script installs and configures the NVIDIA Container Toolkit. On
+Ubuntu/Debian hosts managed through NVIDIA packages, it also checks for the
+NVENC driver library and installs the matching `libnvidia-encode-*` package
+(including the `-server` variant) when needed. For a manual deployment, install
+the toolkit and the matching NVENC library, then start the optional override:
 
 ```bash
 docker compose -f compose.yaml -f compose.nvidia.yaml up -d --build backend

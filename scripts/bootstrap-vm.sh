@@ -12,6 +12,7 @@ QDRANT_IMAGE="${QDRANT_IMAGE:-qdrant/qdrant:v1.15.4}"
 # present. Use off to force CPU-only deployment or required to fail when GPU
 # support cannot be enabled.
 PARALLAX_GPU="${PARALLAX_GPU:-auto}"
+NVIDIA_ENCODE_INSTALLED=false
 
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -50,6 +51,50 @@ install_docker() {
 
 docker_has_nvidia_runtime() {
   $DCMD info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"nvidia"'
+}
+
+nvidia_encode_library_present() {
+  # NVENC is a separate host-driver library. nvidia-smi and CUDA compute can
+  # work without it, but FFmpeg cannot use h264_nvenc/hevc_nvenc in that case.
+  ldconfig -p 2>/dev/null | grep -q 'libnvidia-encode\.so\.1'
+}
+
+nvidia_encode_package() {
+  # Ubuntu/Debian split the video libraries from nvidia-utils. Derive the
+  # matching package name from the installed nvidia-smi owner, e.g.
+  # nvidia-utils-580-server -> libnvidia-encode-580-server.
+  have dpkg-query || return 1
+  local smi owner
+  smi="$(readlink -f "$(command -v nvidia-smi)")" || return 1
+  owner="$(dpkg-query -S "$smi" 2>/dev/null | head -n1 | cut -d: -f1)"
+  if [[ "$owner" =~ ^nvidia-utils-([0-9]+)(-server)?$ ]]; then
+    printf 'libnvidia-encode-%s%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]:-}"
+    return 0
+  fi
+  return 1
+}
+
+ensure_nvidia_encode_library() {
+  if nvidia_encode_library_present; then
+    return 0
+  fi
+
+  local package
+  if ! package="$(nvidia_encode_package)"; then
+    log "NVENC library is missing; could not determine its package from nvidia-smi"
+    log "CUDA transcription can still work, but FFmpeg GPU encoding will remain disabled"
+    return 1
+  fi
+
+  log "Installing NVIDIA video driver library ($package)"
+  as_root apt-get update
+  as_root apt-get install -y --no-install-recommends "$package"
+  if ! nvidia_encode_library_present; then
+    log "NVENC library is still unavailable after installing $package"
+    return 1
+  fi
+  NVIDIA_ENCODE_INSTALLED=true
+  return 0
 }
 
 install_nvidia_container_toolkit() {
@@ -91,16 +136,27 @@ configure_nvidia_gpu() {
     log "No working NVIDIA driver found; using CPU-only media processing"
     return
   fi
+  local restart_docker=false
+  if ensure_nvidia_encode_library; then
+    # Refresh Docker after adding a driver library so new GPU containers see
+    # the complete compute and video driver set.
+    if [[ "$NVIDIA_ENCODE_INSTALLED" == true ]]; then restart_docker=true; fi
+  elif [[ "$PARALLAX_GPU" == 'required' ]]; then
+    die "PARALLAX_GPU=required, but the NVIDIA NVENC library could not be enabled"
+  fi
   if docker_has_nvidia_runtime; then
     log "Docker NVIDIA runtime is already configured"
-    return
+  else
+    if ! have nvidia-ctk; then
+      install_nvidia_container_toolkit
+    fi
+    log "Configuring Docker for NVIDIA GPU access"
+    as_root nvidia-ctk runtime configure --runtime=docker
+    restart_docker=true
   fi
-  if ! have nvidia-ctk; then
-    install_nvidia_container_toolkit
+  if [[ "$restart_docker" == true ]]; then
+    as_root systemctl restart docker
   fi
-  log "Configuring Docker for NVIDIA GPU access"
-  as_root nvidia-ctk runtime configure --runtime=docker
-  as_root systemctl restart docker
   if ! docker_has_nvidia_runtime; then
     die "Docker did not register the NVIDIA runtime after configuration"
   fi
