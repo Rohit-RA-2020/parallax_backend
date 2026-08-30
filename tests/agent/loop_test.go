@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	. "parallax/internal/agent"
 	"parallax/internal/llm"
@@ -124,6 +125,66 @@ func TestAgentLoopToolThenAnswer(t *testing.T) {
 	joined := fmtRoles(roles)
 	if !strings.Contains(joined, "assistant tool user") && !strings.Contains(joined, "system user assistant tool assistant") {
 		t.Fatalf("history roles: %s", joined)
+	}
+}
+
+func TestAgentLoopRunsIndependentToolsInParallelAndPreservesMessageOrder(t *testing.T) {
+	reg := tools.NewRegistry()
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	tool := llm.NewFunctionTool("generate_asset", "generate", json.RawMessage(`{"type":"object"}`))
+	reg.RegisterParallel(tool, func(_ context.Context, raw json.RawMessage) tools.Result {
+		var in struct {
+			Name string `json:"name"`
+		}
+		_ = json.Unmarshal(raw, &in)
+		started <- in.Name
+		<-release
+		return tools.Result{OK: true, Output: map[string]any{"name": in.Name}}
+	}, func(json.RawMessage) bool { return true })
+
+	call := func(index int, id, name string) llm.ToolCallDelta {
+		var delta llm.ToolCallDelta
+		delta.Index = index
+		delta.ID = id
+		delta.Type = "function"
+		delta.Function.Name = "generate_asset"
+		delta.Function.Arguments = fmt.Sprintf(`{"name":%q}`, name)
+		return delta
+	}
+	p := &scriptedProvider{turns: []scriptedTurn{
+		{deltas: []llm.Delta{{ToolCalls: []llm.ToolCallDelta{
+			call(0, "call-image", "image"), call(1, "call-audio", "audio"),
+		}, FinishReason: "tool_calls"}}},
+		{deltas: []llm.Delta{{Content: "Assets generated.", FinishReason: "stop"}}},
+	}}
+
+	done := make(chan Outcome, 1)
+	go func() {
+		done <- (&Agent{Provider: p, Tools: reg, MaxIters: 3, MaxParallelTools: 2}).Run(
+			context.Background(), Input{SessionID: "parallel", Messages: []llm.Message{{Role: llm.RoleUser, Content: "make both"}}}, nil,
+		)
+	}()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			close(release)
+			t.Fatal("independent tool calls did not start concurrently")
+		}
+	}
+	close(release)
+	out := <-done
+
+	var toolIDs []string
+	for _, message := range out.Messages {
+		if message.Role == llm.RoleTool {
+			toolIDs = append(toolIDs, message.ToolCallID)
+		}
+	}
+	if got := strings.Join(toolIDs, ","); got != "call-image,call-audio" {
+		t.Fatalf("tool message order = %s", got)
 	}
 }
 

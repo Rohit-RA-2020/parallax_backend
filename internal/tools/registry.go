@@ -32,6 +32,11 @@ func (r Result) JSON() string {
 // Handler executes a tool with already-parsed JSON arguments.
 type Handler func(ctx context.Context, args json.RawMessage) Result
 
+// ParallelPolicy reports whether one invocation is independent of other tool
+// calls in the same model turn. Tools are serial by default; handlers opt in
+// only when their arguments do not mutate shared ordered state.
+type ParallelPolicy func(args json.RawMessage) bool
+
 // Progress is an optional realtime update emitted by long-running tools.
 type Progress struct {
 	Phase   string  `json:"phase,omitempty"`
@@ -59,8 +64,9 @@ func ReportProgress(ctx context.Context, progress Progress) {
 }
 
 type spec struct {
-	tool    llm.ToolSpec
-	handler Handler
+	tool           llm.ToolSpec
+	handler        Handler
+	parallelPolicy ParallelPolicy
 }
 
 // Registry maps tool names to schemas + handlers.
@@ -75,13 +81,23 @@ func NewRegistry() *Registry {
 }
 
 func (r *Registry) Register(tool llm.ToolSpec, h Handler) {
+	r.register(tool, h, nil)
+}
+
+// RegisterParallel registers a tool that may run concurrently when policy
+// approves the specific invocation. A nil policy is treated as serial.
+func (r *Registry) RegisterParallel(tool llm.ToolSpec, h Handler, policy ParallelPolicy) {
+	r.register(tool, h, policy)
+}
+
+func (r *Registry) register(tool llm.ToolSpec, h Handler, policy ParallelPolicy) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	name := tool.Function.Name
 	if _, exists := r.items[name]; !exists {
 		r.order = append(r.order, name)
 	}
-	r.items[name] = spec{tool: tool, handler: h}
+	r.items[name] = spec{tool: tool, handler: h, parallelPolicy: policy}
 }
 
 func (r *Registry) Specs() []llm.ToolSpec {
@@ -115,4 +131,23 @@ func (r *Registry) Execute(ctx context.Context, name, arguments string) Result {
 	res.Name = name
 	res.Elapsed = time.Since(start)
 	return res
+}
+
+// ParallelSafe reports whether the registered tool permits this invocation to
+// run alongside adjacent independent calls from the same assistant message.
+func (r *Registry) ParallelSafe(name, arguments string) bool {
+	r.mu.RLock()
+	item, ok := r.items[name]
+	r.mu.RUnlock()
+	if !ok || item.parallelPolicy == nil {
+		return false
+	}
+	raw := json.RawMessage(arguments)
+	if len(raw) == 0 {
+		raw = json.RawMessage(`{}`)
+	}
+	if !json.Valid(raw) {
+		return false
+	}
+	return item.parallelPolicy(raw)
 }

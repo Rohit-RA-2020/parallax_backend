@@ -47,7 +47,7 @@ type ImageEnv struct {
 }
 
 func RegisterImage(reg *Registry, env ImageEnv) {
-	reg.Register(llm.NewFunctionTool(
+	reg.RegisterParallel(llm.NewFunctionTool(
 		"generate_image",
 		"Generate or edit a still with Gemini and save it into the project bin under media/. For a new picture, pass only a detailed prompt. To edit an uploaded or previously generated still, pass source (or images) with the workspace path plus an edit prompt — the source bytes are sent to Gemini with the instructions. If the user attached an image in the current chat, it is available automatically when source/images are omitted. A single source is replaced in place so the bin and timeline update; pass apply_to \"none\" to keep a separate variant. Additional images can be mixed in as references. New and edited stills are described and indexed for search_images. Then call place_media only when a new file should go on the timeline.",
 		json.RawMessage(`{
@@ -64,7 +64,28 @@ func RegisterImage(reg *Registry, env ImageEnv) {
 			},
 			"required":["prompt"]
 		}`),
-	), env.generateImage)
+	), env.generateImage, env.parallelImageGeneration)
+}
+
+func (e ImageEnv) parallelImageGeneration(raw json.RawMessage) bool {
+	var in struct {
+		Source  string          `json:"source"`
+		Path    string          `json:"path"`
+		Image   string          `json:"image"`
+		Images  json.RawMessage `json:"images"`
+		ApplyTo string          `json:"apply_to"`
+	}
+	if json.Unmarshal(raw, &in) != nil {
+		return false
+	}
+	// Explicitly keeping a variant never overwrites a reference image.
+	if strings.EqualFold(strings.TrimSpace(in.ApplyTo), "none") {
+		return true
+	}
+	// A plain text-to-image call creates a new asset. Chat-default images turn
+	// the same arguments into an in-place edit, so keep that case serial.
+	return strings.TrimSpace(in.Source) == "" && strings.TrimSpace(in.Path) == "" &&
+		strings.TrimSpace(in.Image) == "" && len(in.Images) == 0 && len(e.DefaultImages) == 0
 }
 
 func (e ImageEnv) generateImage(ctx context.Context, raw json.RawMessage) Result {

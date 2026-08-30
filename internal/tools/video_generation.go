@@ -30,7 +30,7 @@ type VideoGenerationEnv struct {
 }
 
 func RegisterVideoGeneration(reg *Registry, env VideoGenerationEnv) {
-	reg.Register(llm.NewFunctionTool(
+	reg.RegisterParallel(llm.NewFunctionTool(
 		"generate_video",
 		"Generate or edit a video with Gemini and save it into the project media bin. The tool automatically chooses Gemini Omni Flash for normal, fast, multimodal generation and conversational edits, or standard Veo 3.1 for cinematic/high-fidelity requests, explicit duration/resolution, reference-image control, first/last-frame interpolation, and extension. If the user attached an image in the current chat, it is used automatically as the source when source is omitted. Provide task as text_to_video, image_to_video, reference_to_video, edit, extend, or interpolate when the intent is clear. Generated videos are indexed automatically; call place_media only when the user asks to put the result on the timeline.",
 		json.RawMessage(`{
@@ -50,7 +50,26 @@ func RegisterVideoGeneration(reg *Registry, env VideoGenerationEnv) {
 			},
 			"required":["prompt"]
 		}`),
-	), env.generateVideo)
+	), env.generateVideo, env.parallelVideoGeneration)
+}
+
+func (e VideoGenerationEnv) parallelVideoGeneration(raw json.RawMessage) bool {
+	var in struct {
+		Task    string `json:"task"`
+		Source  string `json:"source"`
+		ApplyTo string `json:"apply_to"`
+	}
+	if json.Unmarshal(raw, &in) != nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(in.ApplyTo), "none") {
+		return true
+	}
+	if strings.TrimSpace(in.ApplyTo) != "" || strings.TrimSpace(in.Source) != "" || len(e.DefaultImages) > 0 {
+		return false
+	}
+	task := strings.ToLower(strings.TrimSpace(in.Task))
+	return task != "edit" && task != "extend"
 }
 
 func (e VideoGenerationEnv) generateVideo(ctx context.Context, raw json.RawMessage) Result {

@@ -76,6 +76,7 @@ type Config struct {
 	ElevenLabsMaxConcurrency   int
 	ElevenLabsMaxResponseBytes int64
 	MaxIters                   int
+	MaxParallelTools           int
 	MaxUploadBytes             int64
 	UploadExpiry               time.Duration
 	UploadStatusRetention      time.Duration
@@ -160,6 +161,7 @@ func Load() (Config, error) {
 		ElevenLabsMaxConcurrency:   envInt("ELEVENLABS_MAX_CONCURRENCY", 4),
 		ElevenLabsMaxResponseBytes: int64(envInt("ELEVENLABS_MAX_RESPONSE_BYTES", 256<<20)),
 		MaxIters:                   envInt("PARALLAX_MAX_ITERS", DefaultMaxIters),
+		MaxParallelTools:           envInt("PARALLAX_MAX_PARALLEL_TOOLS", 4),
 		MaxUploadBytes:             envInt64("PARALLAX_MAX_UPLOAD_BYTES", 64<<30),
 		UploadExpiry:               time.Duration(envInt("PARALLAX_UPLOAD_EXPIRY_HOURS", 24)) * time.Hour,
 		UploadStatusRetention:      time.Duration(envInt("PARALLAX_UPLOAD_STATUS_RETENTION_HOURS", 168)) * time.Hour,
@@ -189,6 +191,9 @@ func Load() (Config, error) {
 
 	if cfg.MaxIters < 1 {
 		cfg.MaxIters = DefaultMaxIters
+	}
+	if cfg.MaxParallelTools < 1 {
+		cfg.MaxParallelTools = 4
 	}
 	if cfg.MaxUploadBytes < 1<<20 {
 		cfg.MaxUploadBytes = 64 << 30

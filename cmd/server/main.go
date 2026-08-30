@@ -169,6 +169,7 @@ func main() {
 		Bins:                    bins,
 		Projects:                projectStore,
 		MaxIters:                cfg.MaxIters,
+		MaxParallelTools:        cfg.MaxParallelTools,
 		Logger:                  log,
 		Workspace:               cfg.WorkspaceDir,
 		Indexer:                 indexer,

@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"parallax/internal/llm"
 	"parallax/internal/tools"
 )
 
 const defaultMaxIters = 12
+const defaultMaxParallelTools = 4
 
 // Agent is a framework-free observe → think → act loop.
 // It streams text as the model produces it, executes tool calls locally,
@@ -20,7 +22,10 @@ type Agent struct {
 	Provider llm.ChatProvider
 	Tools    *tools.Registry
 	MaxIters int
-	Logger   *slog.Logger
+	// MaxParallelTools bounds independent tool calls from one model turn.
+	// Tools remain serial unless their registry policy explicitly opts in.
+	MaxParallelTools int
+	Logger           *slog.Logger
 }
 
 type Input struct {
@@ -50,10 +55,26 @@ func (a *Agent) log() *slog.Logger {
 	return slog.Default()
 }
 
+func (a *Agent) maxParallelTools() int {
+	if a.MaxParallelTools < 1 {
+		return defaultMaxParallelTools
+	}
+	return a.MaxParallelTools
+}
+
 // Run drives the loop and reports every step through emit.
 func (a *Agent) Run(ctx context.Context, in Input, emit Sink) Outcome {
 	if emit == nil {
 		emit = func(Event) {}
+	}
+	// Parallel tools report progress from different goroutines. Serialize sink
+	// access so SSE writers and event collectors never receive concurrent calls.
+	rawEmit := emit
+	var emitMu sync.Mutex
+	emit = func(ev Event) {
+		emitMu.Lock()
+		defer emitMu.Unlock()
+		rawEmit(ev)
 	}
 	if a.Provider == nil {
 		emit(NewEvent(EventError, ErrorPayload{Message: "no LLM provider configured"}))
@@ -143,41 +164,13 @@ func (a *Agent) Run(ctx context.Context, in Input, emit Sink) Outcome {
 		}
 
 		emit(NewEvent(EventStep, StepPayload{Iteration: i, Phase: "act"}))
-		for _, call := range calls {
-			args := json.RawMessage(call.Function.Arguments)
-			if !json.Valid(args) {
-				args = json.RawMessage(`{}`)
-			}
-			emit(NewEvent(EventToolCall, ToolCallPayload{
-				ID:        call.ID,
-				Name:      call.Function.Name,
-				Arguments: args,
-				Iteration: i,
-			}))
-
-			toolCtx := tools.WithProgress(ctx, func(progress tools.Progress) {
-				emit(NewEvent(EventToolProgress, ToolProgressPayload{
-					ID: call.ID, Name: call.Function.Name, Phase: progress.Phase,
-					Current: progress.Current, Total: progress.Total, Percent: progress.Percent,
-					Iteration: i,
-				}))
-			})
-			res := a.Tools.Execute(toolCtx, call.Function.Name, call.Function.Arguments)
-			emit(NewEvent(EventToolResult, ToolResultPayload{
-				ID:        call.ID,
-				Name:      call.Function.Name,
-				OK:        res.OK,
-				Output:    res.Output,
-				Error:     res.Error,
-				ElapsedMS: res.Elapsed.Milliseconds(),
-				Iteration: i,
-			}))
-
+		results := a.executeToolCalls(ctx, calls, i, emit)
+		for index, call := range calls {
 			messages = append(messages, llm.Message{
 				Role:       llm.RoleTool,
 				ToolCallID: call.ID,
 				Name:       call.Function.Name,
-				Content:    clip(res.JSON(), 16<<10),
+				Content:    clip(results[index].JSON(), 16<<10),
 			})
 		}
 	}
@@ -190,6 +183,75 @@ func (a *Agent) Run(ctx context.Context, in Input, emit Sink) Outcome {
 		SessionID:  in.SessionID,
 	}))
 	return Outcome{SessionID: in.SessionID, Messages: messages, Iterations: max, Reason: "max_iterations"}
+}
+
+// executeToolCalls runs consecutive parallel-safe calls as a bounded batch.
+// A serial call is a barrier, preserving the model's requested ordering around
+// timeline mutations, in-place edits, and other stateful operations.
+func (a *Agent) executeToolCalls(ctx context.Context, calls []llm.ToolCall, iteration int, emit Sink) []tools.Result {
+	results := make([]tools.Result, len(calls))
+	for start := 0; start < len(calls); {
+		if !a.Tools.ParallelSafe(calls[start].Function.Name, calls[start].Function.Arguments) {
+			results[start] = a.executeToolCall(ctx, calls[start], iteration, emit)
+			start++
+			continue
+		}
+		end := start + 1
+		for end < len(calls) && a.Tools.ParallelSafe(calls[end].Function.Name, calls[end].Function.Arguments) {
+			end++
+		}
+		a.executeParallelBatch(ctx, calls[start:end], results[start:end], iteration, emit)
+		start = end
+	}
+	return results
+}
+
+func (a *Agent) executeParallelBatch(ctx context.Context, calls []llm.ToolCall, results []tools.Result, iteration int, emit Sink) {
+	limit := a.maxParallelTools()
+	if limit > len(calls) {
+		limit = len(calls)
+	}
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	for index, call := range calls {
+		index, call := index, call
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				results[index] = tools.Result{OK: false, Name: call.Function.Name, Error: ctx.Err().Error()}
+				return
+			}
+			results[index] = a.executeToolCall(ctx, call, iteration, emit)
+		}()
+	}
+	wg.Wait()
+}
+
+func (a *Agent) executeToolCall(ctx context.Context, call llm.ToolCall, iteration int, emit Sink) tools.Result {
+	args := json.RawMessage(call.Function.Arguments)
+	if !json.Valid(args) {
+		args = json.RawMessage(`{}`)
+	}
+	emit(NewEvent(EventToolCall, ToolCallPayload{
+		ID: call.ID, Name: call.Function.Name, Arguments: args, Iteration: iteration,
+	}))
+	toolCtx := tools.WithProgress(ctx, func(progress tools.Progress) {
+		emit(NewEvent(EventToolProgress, ToolProgressPayload{
+			ID: call.ID, Name: call.Function.Name, Phase: progress.Phase,
+			Current: progress.Current, Total: progress.Total, Percent: progress.Percent,
+			Iteration: iteration,
+		}))
+	})
+	res := a.Tools.Execute(toolCtx, call.Function.Name, call.Function.Arguments)
+	emit(NewEvent(EventToolResult, ToolResultPayload{
+		ID: call.ID, Name: call.Function.Name, OK: res.OK, Output: res.Output, Error: res.Error,
+		ElapsedMS: res.Elapsed.Milliseconds(), Iteration: iteration,
+	}))
+	return res
 }
 
 func clip(s string, n int) string {

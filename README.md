@@ -33,6 +33,8 @@ Any OpenAI-compatible /v1/chat/completions
 
 The agent is a plain `for` loop in `internal/agent`. The only LLM dependency is the `llm.ChatProvider` interface. Production uses `llm.CompatClient`, which speaks Chat Completions + SSE + function tools — the dialect almost every hosted model implements. Changing provider is a settings change, not a code change.
 
+Independent asset-only image, video, voiceover, music, and sound-effect calls from one model turn run concurrently. Stateful calls such as timeline placement and in-place edits remain ordered barriers. `PARALLAX_MAX_PARALLEL_TOOLS` bounds the per-turn concurrency and defaults to 4.
+
 FFmpeg is never executed as a shell string. Commands arrive as structured tool arguments (`args: [...]`), get validated (binary, metacharacters, workspace paths), and run with `exec.CommandContext`.
 
 At startup the server probes ffmpeg plus the host GPUs and, when a backend

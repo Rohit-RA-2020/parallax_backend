@@ -90,7 +90,7 @@ func RegisterAudioGeneration(reg *Registry, env AudioGenerationEnv) {
 }`),
 	), env.listVoices)
 
-	reg.Register(llm.NewFunctionTool(
+	reg.RegisterParallel(llm.NewFunctionTool(
 		"generate_voiceover",
 		"Generate a high-quality ElevenLabs voiceover. Use list_tts_voices first and provide a catalog-approved voice_id. Omit placement to create an asset only; provide placement to add the generated audio to A1 or A2 in the same project revision.",
 		json.RawMessage(`{
@@ -107,9 +107,9 @@ func RegisterAudioGeneration(reg *Registry, env AudioGenerationEnv) {
   },
   "required":["text","voice_id"]
 }`),
-	), env.generateVoiceover)
+	), env.generateVoiceover, parallelWithoutPlacement)
 
-	reg.Register(llm.NewFunctionTool(
+	reg.RegisterParallel(llm.NewFunctionTool(
 		"generate_music",
 		"Generate music with Gemini Lyria 3. Use a specific prompt describing genre, instruments, mood, BPM, key, structure, and intended duration. Use lyria-3-clip-preview for a 30-second clip or lyria-3-pro-preview for a longer structured song. Add 'instrumental only, no vocals' when dialogue or narration must remain clear. Omit placement to create an asset only; provide placement to add the generated audio to A1 or A2.",
 		json.RawMessage(`{
@@ -124,9 +124,9 @@ func RegisterAudioGeneration(reg *Registry, env AudioGenerationEnv) {
 	},
 	"required":["prompt"]
 }`),
-	), env.generateMusic)
+	), env.generateMusic, parallelWithoutPlacement)
 
-	reg.Register(llm.NewFunctionTool(
+	reg.RegisterParallel(llm.NewFunctionTool(
 		"generate_sound_effect",
 		"Generate an ElevenLabs sound effect from a precise natural-language description. Use duration_seconds for exact timing, loop for seamless ambience, and prompt_influence to control literalness. Omit placement to create an asset only.",
 		json.RawMessage(`{
@@ -142,7 +142,17 @@ func RegisterAudioGeneration(reg *Registry, env AudioGenerationEnv) {
   },
   "required":["text"]
 }`),
-	), env.generateSoundEffect)
+	), env.generateSoundEffect, parallelWithoutPlacement)
+}
+
+func parallelWithoutPlacement(raw json.RawMessage) bool {
+	var in struct {
+		Placement json.RawMessage `json:"placement"`
+	}
+	if json.Unmarshal(raw, &in) != nil {
+		return false
+	}
+	return len(in.Placement) == 0 || string(in.Placement) == "null"
 }
 
 func (e AudioGenerationEnv) listVoices(_ context.Context, raw json.RawMessage) Result {

@@ -49,6 +49,7 @@ type Server struct {
 	Projects                *projects.Store
 	NewLLM                  ProviderFactory
 	MaxIters                int
+	MaxParallelTools        int
 	Logger                  *slog.Logger
 	Workspace               string
 	Indexer                 *transcript.Indexer
@@ -448,10 +449,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ag := &agent.Agent{
-		Provider: provider,
-		Tools:    toolRegistry,
-		MaxIters: s.MaxIters,
-		Logger:   s.log(),
+		Provider:         provider,
+		Tools:            toolRegistry,
+		MaxIters:         s.MaxIters,
+		MaxParallelTools: s.MaxParallelTools,
+		Logger:           s.log(),
 	}
 	out := ag.Run(r.Context(), agent.Input{
 		SessionID:      sess.ID,
