@@ -8,6 +8,10 @@ PARALLAX_DIR="${PARALLAX_DIR:-${HOME}/parallax_backend}"
 PARALLAX_IMAGE="${PARALLAX_IMAGE:-parallax-backend:latest}"
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:18.6-bookworm}"
 QDRANT_IMAGE="${QDRANT_IMAGE:-qdrant/qdrant:v1.15.4}"
+# auto installs the NVIDIA Container Toolkit when a working NVIDIA driver is
+# present. Use off to force CPU-only deployment or required to fail when GPU
+# support cannot be enabled.
+PARALLAX_GPU="${PARALLAX_GPU:-auto}"
 
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -44,12 +48,71 @@ install_docker() {
   if [[ ${EUID} -ne 0 ]]; then as_root usermod -aG docker "$(id -un)" || true; fi
 }
 
+docker_has_nvidia_runtime() {
+  $DCMD info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"nvidia"'
+}
+
+install_nvidia_container_toolkit() {
+  log "Installing NVIDIA Container Toolkit"
+  as_root apt-get update
+  as_root apt-get install -y --no-install-recommends ca-certificates curl gnupg2
+
+  local keyring='/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg'
+  local source_list='/etc/apt/sources.list.d/nvidia-container-toolkit.list'
+  local key_tmp list_tmp
+  key_tmp="$(mktemp)"
+  list_tmp="$(mktemp)"
+  trap 'rm -f "$key_tmp" "$list_tmp"' RETURN
+  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor > "$key_tmp"
+  curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list |
+    sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > "$list_tmp"
+  as_root install -m 0644 "$key_tmp" "$keyring"
+  as_root install -m 0644 "$list_tmp" "$source_list"
+  rm -f "$key_tmp" "$list_tmp"
+  trap - RETURN
+
+  as_root apt-get update
+  as_root apt-get install -y nvidia-container-toolkit
+}
+
+configure_nvidia_gpu() {
+  case "$PARALLAX_GPU" in
+    auto|required|off) ;;
+    *) die "PARALLAX_GPU must be auto, required, or off" ;;
+  esac
+  if [[ "$PARALLAX_GPU" == 'off' ]]; then
+    log "GPU setup disabled (PARALLAX_GPU=off)"
+    return
+  fi
+  if ! have nvidia-smi || ! nvidia-smi -L >/dev/null 2>&1; then
+    if [[ "$PARALLAX_GPU" == 'required' ]]; then
+      die "PARALLAX_GPU=required, but no working NVIDIA driver was found"
+    fi
+    log "No working NVIDIA driver found; using CPU-only media processing"
+    return
+  fi
+  if docker_has_nvidia_runtime; then
+    log "Docker NVIDIA runtime is already configured"
+    return
+  fi
+  if ! have nvidia-ctk; then
+    install_nvidia_container_toolkit
+  fi
+  log "Configuring Docker for NVIDIA GPU access"
+  as_root nvidia-ctk runtime configure --runtime=docker
+  as_root systemctl restart docker
+  if ! docker_has_nvidia_runtime; then
+    die "Docker did not register the NVIDIA runtime after configuration"
+  fi
+}
+
 if ! have git || ! have curl; then
   as_root apt-get update -y
   as_root apt-get install -y --no-install-recommends ca-certificates curl git
 fi
 if ! have docker || ! docker_cmd >/dev/null; then install_docker; fi
 DCMD="$(docker_cmd)" || die "Docker is installed but its daemon is not reachable"
+configure_nvidia_gpu
 
 log "Fetching Parallax backend"
 if [[ -d "$PARALLAX_DIR/.git" ]]; then
@@ -89,8 +152,17 @@ for key in SUPABASE_URL SUPABASE_JWKS_URL SUPABASE_ISSUER SUPABASE_AUDIENCE PARA
 done
 
 COMPOSE_ARGS=(-f compose.yaml)
-if have nvidia-smi && $DCMD info --format '{{json .Runtimes}}' 2>/dev/null | grep -q nvidia; then
-  printf '%s\n' 'services:' '  backend:' '    gpus: all' > "$PARALLAX_DIR/compose.gpu.yaml"
+if have nvidia-smi && nvidia-smi -L >/dev/null 2>&1 && docker_has_nvidia_runtime; then
+  printf '%s\n' \
+    'services:' \
+    '  backend:' \
+    '    deploy:' \
+    '      resources:' \
+    '        reservations:' \
+    '          devices:' \
+    '            - driver: nvidia' \
+    '              count: all' \
+    '              capabilities: [gpu]' > "$PARALLAX_DIR/compose.gpu.yaml"
   COMPOSE_ARGS+=(-f compose.gpu.yaml)
 fi
 

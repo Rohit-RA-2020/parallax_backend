@@ -1,0 +1,11 @@
+# Opt-in NVIDIA GPU support for the backend. Keep this as an override so the
+# default Compose deployment remains usable on CPU-only hosts.
+services:
+  backend:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

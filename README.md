@@ -252,8 +252,11 @@ curl -fsSL https://raw.githubusercontent.com/Rohit-RA-2020/parallax_backend/main
 
 When it finishes, edit the generated `~/parallax_backend/.env` and apply it with
 `docker compose up -d --build`. The image includes the Go server, FFmpeg, fonts,
-Python, and faster-whisper; it does not include or serve the frontend. On hosts
-with the NVIDIA Container Runtime, Compose automatically enables the GPU.
+Python, and faster-whisper; it does not include or serve the frontend. On a host
+where `nvidia-smi` works, the bootstrap script installs and configures the NVIDIA
+Container Toolkit, then enables GPU access automatically. Set
+`PARALLAX_GPU=off` to force CPU-only processing or `PARALLAX_GPU=required` to
+abort if GPU access cannot be enabled.
 
 Compose publishes the backend on `0.0.0.0:8080`, PostgreSQL on
 `0.0.0.0:5432`, Qdrant REST on `0.0.0.0:6333`, and Qdrant gRPC on

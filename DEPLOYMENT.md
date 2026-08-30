@@ -69,6 +69,23 @@ Check liveness at `/health/live` and dependency readiness at `/health/ready`.
 Readiness fails when PostgreSQL, the persistent media directory, or Qdrant is
 unavailable; liveness remains available while the process is running.
 
+### NVIDIA GPU encoding
+
+`FFMPEG_HWACCEL=auto` probes only GPUs already visible inside the backend
+container; it does not make a host GPU available. The bootstrap script installs
+and configures the NVIDIA Container Toolkit automatically when `nvidia-smi`
+works on the host. For a manual deployment, install the toolkit, then start the
+optional override:
+
+```bash
+docker compose -f compose.yaml -f compose.nvidia.yaml up -d --build backend
+```
+
+At startup the backend logs `ffmpeg gpu encode enabled` only after FFmpeg can
+complete a hardware H.264 test encode. If it remains disabled, inspect the
+container with `sudo docker exec <backend-container> nvidia-smi -L` and verify
+that `ffmpeg -encoders` lists `h264_nvenc`.
+
 The backend runs embedded numbered Goose migrations under a PostgreSQL advisory
 lock before serving. Upload and FFmpeg bytes use `parallax_tmp`; they are not
 authoritative and may be discarded after jobs finish or expire.

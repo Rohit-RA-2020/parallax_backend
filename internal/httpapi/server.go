@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"parallax/internal/agent"
@@ -75,6 +76,86 @@ type Server struct {
 	AllowedOrigins          []string
 }
 
+// deferredMediaIndex collects media produced during one Director transaction.
+// In the PostgreSQL store, generated files become addressable only when that
+// transaction commits and promotes the workspace file into an asset version.
+// Starting a worker first makes ResolveFile correctly report the as-yet
+// unpromoted asset as missing.
+type deferredMediaIndex struct {
+	mu     sync.Mutex
+	media  map[string]struct{}
+	images map[string]string
+	audio  map[string]deferredGeneratedAudio
+}
+
+type deferredGeneratedAudio struct {
+	doc      *transcript.Document
+	metadata transcript.GeneratedAudioMetadata
+}
+
+func (q *deferredMediaIndex) addMedia(rel string) {
+	rel = strings.TrimSpace(rel)
+	if rel == "" {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.media == nil {
+		q.media = map[string]struct{}{}
+	}
+	q.media[rel] = struct{}{}
+}
+
+func (q *deferredMediaIndex) addGeneratedImage(rel, prompt string) {
+	rel = strings.TrimSpace(rel)
+	if rel == "" {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.images == nil {
+		q.images = map[string]string{}
+	}
+	q.images[rel] = prompt
+}
+
+func (q *deferredMediaIndex) addGeneratedAudio(rel string, doc *transcript.Document, metadata transcript.GeneratedAudioMetadata) {
+	rel = strings.TrimSpace(rel)
+	if rel == "" {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.audio == nil {
+		q.audio = map[string]deferredGeneratedAudio{}
+	}
+	q.audio[rel] = deferredGeneratedAudio{doc: doc, metadata: metadata}
+}
+
+func (q *deferredMediaIndex) flush(s *Server, projectID string) {
+	q.mu.Lock()
+	media := q.media
+	images := q.images
+	audio := q.audio
+	q.media = nil
+	q.images = nil
+	q.audio = nil
+	q.mu.Unlock()
+	for rel := range media {
+		// A generated-image request has a caption hint and needs the more
+		// specific queueing path below.
+		if _, generatedImage := images[rel]; !generatedImage {
+			s.indexMedia(projectID, rel)
+		}
+	}
+	for rel, prompt := range images {
+		s.indexGeneratedImage(projectID, rel, prompt)
+	}
+	for rel, generated := range audio {
+		s.indexGeneratedAudio(projectID, rel, generated.doc, generated.metadata)
+	}
+}
+
 func (s *Server) indexMedia(projectID, rel string) {
 	if s == nil {
 		return
@@ -100,6 +181,19 @@ func (s *Server) indexGeneratedImage(projectID, rel, prompt string) {
 	}
 	s.Indexer.SetImageHint(projectID, rel, prompt)
 	s.Indexer.Enqueue(projectID, rel)
+}
+
+func (s *Server) indexGeneratedAudio(projectID, rel string, doc *transcript.Document, metadata transcript.GeneratedAudioMetadata) {
+	if s == nil || s.Indexer == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+		defer cancel()
+		if err := s.Indexer.IndexGeneratedAudio(ctx, projectID, rel, doc, metadata); err != nil {
+			s.log().Error("index generated audio", "project", projectID, "path", rel, "err", err)
+		}
+	}()
 }
 
 func (s *Server) indexProject(projectID string) {
@@ -446,6 +540,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var timelineTx *projects.TimelineTransaction
+	var deferredIndex *deferredMediaIndex
 	if projectID != "" {
 		if s.Projects == nil {
 			writeError(w, http.StatusBadRequest, "projects are not configured")
@@ -457,6 +552,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		toolRegistry = tools.NewRegistry()
+		deferredIndex = &deferredMediaIndex{}
 		summary := userText
 		if summary == "" && len(attached) > 0 {
 			summary = "Attached image"
@@ -472,18 +568,18 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			Workspace:  project.Dir,
 			Bins:       s.Bins,
 			OnMutation: timelineTx.MarkMediaMutation,
-			OnApplied:  func(rel string) { s.indexMedia(projectID, rel) },
+			OnApplied:  deferredIndex.addMedia,
 		})
 		tools.RegisterWeb(toolRegistry, tools.WebEnv{APIKey: s.ExaAPIKey, BaseURL: s.ExaBaseURL})
 		tools.RegisterGIFs(toolRegistry, tools.GIFEnv{
 			Service: s.GIFs, Projects: s.Projects, ProjectID: projectID,
 			OnMutation: timelineTx.MarkMediaMutation,
-			OnApplied:  func(rel string) { s.indexMedia(projectID, rel) },
+			OnApplied:  deferredIndex.addMedia,
 		})
 		tools.RegisterYouTube(toolRegistry, tools.YouTubeEnv{
 			Workspace: project.Dir, Bins: s.Bins, Timeout: s.YouTubeTimeout, MaxBytes: s.YouTubeMaxBytes, YTDLPBin: s.YouTubeYTDLPBin,
 			OnMutation: timelineTx.MarkMediaMutation,
-			OnApplied:  func(rel string) { s.indexMedia(projectID, rel) },
+			OnApplied:  deferredIndex.addMedia,
 		})
 		tools.RegisterImage(toolRegistry, tools.ImageEnv{
 			Workspace:     project.Dir,
@@ -492,7 +588,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			Model:         s.GeminiImageModel,
 			DefaultImages: attachedPaths,
 			OnMutation:    timelineTx.MarkMediaMutation,
-			OnApplied:     func(rel, prompt string) { s.indexGeneratedImage(projectID, rel, prompt) },
+			OnApplied:     deferredIndex.addGeneratedImage,
 		})
 		videoClient := gemini.NewClient(s.GeminiAPIKey, s.GeminiBaseURL, s.GeminiVideoTimeout, 256<<20)
 		tools.RegisterVideoGeneration(toolRegistry, tools.VideoGenerationEnv{
@@ -504,7 +600,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			DefaultImages: attachedPaths,
 			Poll:          s.GeminiVideoPoll,
 			OnMutation:    timelineTx.MarkMediaMutation,
-			OnApplied:     func(rel string) { s.indexMedia(projectID, rel) },
+			OnApplied:     deferredIndex.addMedia,
 		})
 		tools.RegisterAudioGeneration(toolRegistry, tools.AudioGenerationEnv{
 			Workspace: project.Dir, Bins: s.Bins, Client: s.ElevenLabs, Voices: s.ElevenVoices,
@@ -512,7 +608,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			TTSModel: s.ElevenTTSModel, SFXModel: s.ElevenSFXModel,
 			TTSOutputFormat: s.ElevenTTSOutputFormat, SFXOutputFormat: s.ElevenSFXOutputFormat,
 			Limiter: s.ElevenLimiter, ProjectID: projectID, Transaction: timelineTx, Indexer: s.Indexer,
-			Logger: s.Logger, OnMutation: timelineTx.MarkMediaMutation,
+			OnIndex: deferredIndex.addGeneratedAudio,
+			Logger:  s.Logger, OnMutation: timelineTx.MarkMediaMutation,
 		})
 		tools.RegisterTimeline(toolRegistry, tools.TimelineEnv{
 			Transaction: timelineTx,
@@ -529,7 +626,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			Bins:        s.Bins,
 			Transaction: timelineTx,
 			OnMutation:  timelineTx.MarkMediaMutation,
-			OnApplied:   func(rel string) { s.indexMedia(projectID, rel) },
+			OnApplied:   deferredIndex.addMedia,
 		})
 	}
 	if toolRegistry == nil {
@@ -633,12 +730,18 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if timelineTx != nil {
 		if out.Reason == "error" || out.Reason == "canceled" || out.Reason == "max_iterations" {
 			timelineTx.Rollback()
-		} else if timeline, changed, commitErr := timelineTx.Commit(); commitErr != nil {
-			_ = stream.Event(agent.NewEvent(agent.EventError, agent.ErrorPayload{Message: "timeline commit failed: " + commitErr.Error()}))
-		} else if changed {
-			_ = stream.Event(agent.NewEvent(agent.EventProjectChanged, agent.ProjectChangedPayload{
-				ProjectID: projectID, Revision: timeline.Revision, TimelineChanged: true,
-			}))
+		} else {
+			timeline, changed, commitErr := timelineTx.Commit()
+			if commitErr != nil {
+				_ = stream.Event(agent.NewEvent(agent.EventError, agent.ErrorPayload{Message: "timeline commit failed: " + commitErr.Error()}))
+			} else if changed {
+				_ = stream.Event(agent.NewEvent(agent.EventProjectChanged, agent.ProjectChangedPayload{
+					ProjectID: projectID, Revision: timeline.Revision, TimelineChanged: true,
+				}))
+			}
+			if commitErr == nil {
+				deferredIndex.flush(s, projectID)
+			}
 		}
 	}
 	s.Sessions.ReplaceMessages(sess.ID, out.Messages)

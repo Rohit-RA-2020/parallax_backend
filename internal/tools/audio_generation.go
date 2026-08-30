@@ -66,6 +66,7 @@ type AudioGenerationEnv struct {
 	ProjectID               string
 	Transaction             *projects.TimelineTransaction
 	Indexer                 *transcript.Indexer
+	OnIndex                 func(rel string, doc *transcript.Document, metadata transcript.GeneratedAudioMetadata)
 	Logger                  *slog.Logger
 	OnMutation              func()
 }
@@ -462,6 +463,10 @@ func (e AudioGenerationEnv) placeAudio(ctx context.Context, rel string, placemen
 }
 
 func (e AudioGenerationEnv) scheduleIndex(rel string, doc *transcript.Document, metadata transcript.GeneratedAudioMetadata) {
+	if e.OnIndex != nil {
+		e.OnIndex(rel, doc, metadata)
+		return
+	}
 	if e.Indexer == nil {
 		return
 	}
