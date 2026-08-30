@@ -44,10 +44,16 @@ services:
   backend:
     image: ${PARALLAX_IMAGE:-parallax-backend:latest}
     build: .
+    # This image is built from the local checkout; never try to pull the
+    # placeholder tag from a registry before building it.
+    pull_policy: build
     restart: unless-stopped
     env_file: .env
     environment:
       DATABASE_URL: postgres://parallax:${POSTGRES_PASSWORD}@postgres:5432/parallax?sslmode=disable
+      # The NVIDIA runtime defaults to compute+utility. NVENC/NVDEC require the
+      # Video Codec SDK libraries mounted by the additional video capability.
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility,video}
       PARALLAX_ADDR: :8080
       PARALLAX_WORKSPACE: /app/tmp/workspace
       PARALLAX_DATA: /app/tmp/data

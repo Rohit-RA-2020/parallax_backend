@@ -84,7 +84,9 @@ docker compose -f compose.yaml -f compose.nvidia.yaml up -d --build backend
 At startup the backend logs `ffmpeg gpu encode enabled` only after FFmpeg can
 complete a hardware H.264 test encode. If it remains disabled, inspect the
 container with `sudo docker exec <backend-container> nvidia-smi -L` and verify
-that `ffmpeg -encoders` lists `h264_nvenc`.
+that `ffmpeg -encoders` lists `h264_nvenc`. The backend requests
+`compute,utility,video` NVIDIA driver capabilities; `video` is required for the
+NVENC/NVDEC Video Codec SDK libraries.
 
 The backend runs embedded numbered Goose migrations under a PostgreSQL advisory
 lock before serving. Upload and FFmpeg bytes use `parallax_tmp`; they are not

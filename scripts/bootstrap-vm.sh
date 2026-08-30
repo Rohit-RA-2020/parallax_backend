@@ -189,7 +189,7 @@ Add the required Supabase, LLM, and embedding credentials to:
   ${PARALLAX_DIR}/.env
 
 Then apply changes with:
-  cd '${PARALLAX_DIR}' && ${DCMD} compose ${COMPOSE_ARGS[*]} up -d
+  cd '${PARALLAX_DIR}' && ${DCMD} compose ${COMPOSE_ARGS[*]} up -d --build
 
 When credentials are complete, the API will be available at http://localhost:8080.
 PostgreSQL listens on 0.0.0.0:${POSTGRES_PORT:-5432}; Qdrant REST listens on
