@@ -69,6 +69,10 @@ type Server struct {
 	YouTubeTimeout          time.Duration
 	YouTubeMaxBytes         int64
 	YouTubeYTDLPBin         string
+	BlenderBin              string
+	BlenderBridgeHost       string
+	BlenderBridgePort       int
+	BlenderTimeout          time.Duration
 	Uploads                 *UploadManager
 	Auth                    *auth.Authenticator
 	Database                *database.DB
@@ -627,6 +631,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			Transaction: timelineTx,
 			OnMutation:  timelineTx.MarkMediaMutation,
 			OnApplied:   deferredIndex.addMedia,
+		})
+		tools.RegisterBlender(toolRegistry, tools.BlenderEnv{
+			Workspace: project.Dir, BlenderBin: s.BlenderBin,
+			BridgeHost: s.BlenderBridgeHost, BridgePort: s.BlenderBridgePort,
+			Timeout:    s.BlenderTimeout,
+			OnMutation: timelineTx.MarkMediaMutation,
+			OnApplied:  deferredIndex.addMedia,
 		})
 	}
 	if toolRegistry == nil {

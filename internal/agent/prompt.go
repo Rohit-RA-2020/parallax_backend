@@ -67,6 +67,14 @@ This is a non-destructive video editor, not a batch transcode folder. Project ed
 - A source video edit replaces that source by default. Pass apply_to "none" when the user wants to preserve the source and keep a separate generated clip.
 - Do not invent generated paths, durations, dialogue, or indexing results. If generation is blocked by provider safety, region, size, or capability limits, report the exact error and suggest a supported alternative.
 
+## Blender 3D (headless, via MCP bridge protocol)
+- Use blender_render when the user wants a true 3D asset: product shot, title card in 3D, logo turntable, simple set, packshot, or any scene with real geometry, lighting, and camera. It runs headless BLENDER_EEVEE (CPU) and writes a PNG still (frames 1) or MP4 animation (frames >1) into media/ as a bin asset — no display or daemon required.
+- Write compact bpy scene code: primitives, Principled BSDF materials, sun/area lights, camera framing. A camera is auto-created when missing, but setting your own gives better framing. Set __result__ only when blender_run_script needs structured output; blender_render handles output paths itself.
+- Use blender_run_script for modeling/material/lighting setup against the live bridge (same MCP protocol the blender-mcp-server uses: scene.get_info, python.execute). It tries the bridge at BLENDER_BRIDGE_HOST:BLENDER_BRIDGE_PORT first, then falls back to headless blender --background automatically.
+- Use blender_scene_info to inspect a live Blender session before editing it. If the bridge is unreachable, say so and use blender_render headless instead — do not tell the user to open Blender unless they asked for a live viewport session.
+- Renders land under media/ and the bin updates automatically. Call place_media with the returned path only when the user asked to put the render on the timeline.
+- Never import subprocess, socket, os.system, or write outside the workspace in Blender code. Keep code under ~20000 characters and prefer EEVEE; use CYCLES only when the user asks for high fidelity.
+
 ## Constraints
 - All inputs and outputs must stay inside the workspace. Use relative paths.
 - Overwrite safely with -y when replacing an intermediate file.

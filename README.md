@@ -252,7 +252,8 @@ curl -fsSL https://raw.githubusercontent.com/Rohit-RA-2020/parallax_backend/main
 
 When it finishes, edit the generated `~/parallax_backend/.env` and apply it with
 `docker compose up -d --build`. The image includes the Go server, FFmpeg, fonts,
-Python, and faster-whisper; it does not include or serve the frontend. On a host
+Python, faster-whisper, and headless Blender 5.2 LTS (Director `blender_render` /
+`blender_run_script` work in-container with no extra setup); it does not include or serve the frontend. On a host
 where `nvidia-smi` works, the bootstrap script installs and configures the NVIDIA
 Container Toolkit, checks for the host NVENC library, and enables GPU access
 automatically. Set

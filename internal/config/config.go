@@ -100,6 +100,10 @@ type Config struct {
 	FFprobeBin                 string
 	FFmpegHWAccel              string
 	FFmpegHWDevice             string
+	BlenderBin                 string
+	BlenderBridgeHost          string
+	BlenderBridgePort          int
+	BlenderTimeout             time.Duration
 	LLMs                       []LLM
 	Embedding                  Embedding
 	QdrantURL                  string
@@ -200,6 +204,10 @@ func Load() (Config, error) {
 		FFprobeBin:                 envOr("FFPROBE_BIN", "ffprobe"),
 		FFmpegHWAccel:              strings.ToLower(envOr("FFMPEG_HWACCEL", "auto")),
 		FFmpegHWDevice:             strings.TrimSpace(os.Getenv("FFMPEG_HWDEVICE")),
+		BlenderBin:                 envOr("BLENDER_BIN", "blender"),
+		BlenderBridgeHost:          envOr("BLENDER_BRIDGE_HOST", "127.0.0.1"),
+		BlenderBridgePort:          envInt("BLENDER_BRIDGE_PORT", 9876),
+		BlenderTimeout:             time.Duration(envInt("BLENDER_TIMEOUT_SECONDS", 600)) * time.Second,
 		LLMs:                       LoadLLMProfiles(),
 		Embedding: Embedding{
 			BaseURL: strings.TrimRight(strings.TrimSpace(os.Getenv("EMBEDDING_BASE_URL")), "/"),
@@ -266,6 +274,12 @@ func Load() (Config, error) {
 	}
 	if cfg.GeminiVideoPoll < time.Second {
 		cfg.GeminiVideoPoll = 5 * time.Second
+	}
+	if cfg.BlenderBridgePort <= 0 || cfg.BlenderBridgePort > 65535 {
+		cfg.BlenderBridgePort = 9876
+	}
+	if cfg.BlenderTimeout < time.Second {
+		cfg.BlenderTimeout = 10 * time.Minute
 	}
 
 	if err := os.MkdirAll(cfg.WorkspaceDir, 0o755); err != nil {
