@@ -568,22 +568,40 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			writeProjectError(w, err)
 			return
 		}
+		publishMedia := func(rel string) {
+			if err := s.Projects.PublishWorkspaceMedia(r.Context(), projectID, rel); err != nil {
+				s.log().Error("publish live media", "project", projectID, "path", rel, "err", err)
+			}
+		}
+		mediaApplied := func(rel string) {
+			publishMedia(rel)
+			deferredIndex.addMedia(rel)
+		}
+		imageApplied := func(rel, prompt string) {
+			publishMedia(rel)
+			deferredIndex.addGeneratedImage(rel, prompt)
+		}
+		audioApplied := func(rel string, doc *transcript.Document, metadata transcript.GeneratedAudioMetadata) {
+			publishMedia(rel)
+			deferredIndex.addGeneratedAudio(rel, doc, metadata)
+		}
+
 		tools.RegisterMedia(toolRegistry, tools.MediaEnv{
 			Workspace:  project.Dir,
 			Bins:       s.Bins,
 			OnMutation: timelineTx.MarkMediaMutation,
-			OnApplied:  deferredIndex.addMedia,
+			OnApplied:  mediaApplied,
 		})
 		tools.RegisterWeb(toolRegistry, tools.WebEnv{APIKey: s.ExaAPIKey, BaseURL: s.ExaBaseURL})
 		tools.RegisterGIFs(toolRegistry, tools.GIFEnv{
 			Service: s.GIFs, Projects: s.Projects, ProjectID: projectID,
 			OnMutation: timelineTx.MarkMediaMutation,
-			OnApplied:  deferredIndex.addMedia,
+			OnApplied:  mediaApplied,
 		})
 		tools.RegisterYouTube(toolRegistry, tools.YouTubeEnv{
 			Workspace: project.Dir, Bins: s.Bins, Timeout: s.YouTubeTimeout, MaxBytes: s.YouTubeMaxBytes, YTDLPBin: s.YouTubeYTDLPBin,
 			OnMutation: timelineTx.MarkMediaMutation,
-			OnApplied:  deferredIndex.addMedia,
+			OnApplied:  mediaApplied,
 		})
 		tools.RegisterImage(toolRegistry, tools.ImageEnv{
 			Workspace:     project.Dir,
@@ -592,7 +610,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			Model:         s.GeminiImageModel,
 			DefaultImages: attachedPaths,
 			OnMutation:    timelineTx.MarkMediaMutation,
-			OnApplied:     deferredIndex.addGeneratedImage,
+			OnApplied:     imageApplied,
 		})
 		videoClient := gemini.NewClient(s.GeminiAPIKey, s.GeminiBaseURL, s.GeminiVideoTimeout, 256<<20)
 		tools.RegisterVideoGeneration(toolRegistry, tools.VideoGenerationEnv{
@@ -604,7 +622,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			DefaultImages: attachedPaths,
 			Poll:          s.GeminiVideoPoll,
 			OnMutation:    timelineTx.MarkMediaMutation,
-			OnApplied:     deferredIndex.addMedia,
+			OnApplied:     mediaApplied,
 		})
 		tools.RegisterAudioGeneration(toolRegistry, tools.AudioGenerationEnv{
 			Workspace: project.Dir, Bins: s.Bins, Client: s.ElevenLabs, Voices: s.ElevenVoices,
@@ -612,7 +630,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			TTSModel: s.ElevenTTSModel, SFXModel: s.ElevenSFXModel,
 			TTSOutputFormat: s.ElevenTTSOutputFormat, SFXOutputFormat: s.ElevenSFXOutputFormat,
 			Limiter: s.ElevenLimiter, ProjectID: projectID, Transaction: timelineTx, Indexer: s.Indexer,
-			OnIndex: deferredIndex.addGeneratedAudio,
+			OnIndex: audioApplied,
 			Logger:  s.Logger, OnMutation: timelineTx.MarkMediaMutation,
 		})
 		tools.RegisterTimeline(toolRegistry, tools.TimelineEnv{
@@ -630,14 +648,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			Bins:        s.Bins,
 			Transaction: timelineTx,
 			OnMutation:  timelineTx.MarkMediaMutation,
-			OnApplied:   deferredIndex.addMedia,
+			OnApplied:   mediaApplied,
 		})
 		tools.RegisterBlender(toolRegistry, tools.BlenderEnv{
 			Workspace: project.Dir, BlenderBin: s.BlenderBin,
 			BridgeHost: s.BlenderBridgeHost, BridgePort: s.BlenderBridgePort,
 			Timeout:    s.BlenderTimeout,
 			OnMutation: timelineTx.MarkMediaMutation,
-			OnApplied:  deferredIndex.addMedia,
+			OnApplied:  mediaApplied,
 		})
 	}
 	if toolRegistry == nil {

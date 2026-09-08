@@ -820,7 +820,40 @@ func (s *Store) commitPGFile(ctx context.Context, projectID, originalName, sourc
 // syncPGWorkspace promotes media produced in the temporary per-project
 // workspace into immutable durable asset versions. It deliberately ignores
 // .parallax metadata and .scratch intermediates; neither is authoritative.
+// PublishWorkspaceMedia makes a completed output available to the bin before the
+// agent's timeline transaction finishes. Only this file is promoted: parallel
+// generators may still be writing other workspace files.
+func (s *Store) PublishWorkspaceMedia(ctx context.Context, projectID, rel string) error {
+	if s.pg == nil {
+		return nil
+	}
+	clean, err := cleanProjectPath(rel)
+	if err != nil {
+		return err
+	}
+	if clean == "" {
+		return errors.New("empty media path")
+	}
+	project, err := s.Get(projectID)
+	if err != nil {
+		return err
+	}
+	tx, err := s.pg.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := s.syncPGWorkspacePaths(ctx, tx, project, clean); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func (s *Store) syncPGWorkspace(ctx context.Context, tx pgx.Tx, project Project) error {
+	return s.syncPGWorkspacePaths(ctx, tx, project, "")
+}
+
+func (s *Store) syncPGWorkspacePaths(ctx context.Context, tx pgx.Tx, project Project, onlyPath string) error {
 	ownerID, err := uuid.Parse(project.OwnerID)
 	if err != nil {
 		return err
@@ -845,6 +878,9 @@ func (s *Store) syncPGWorkspace(ctx context.Context, tx pgx.Tx, project Project)
 		rel, err = cleanProjectPath(rel)
 		if err != nil || rel == "" {
 			return err
+		}
+		if onlyPath != "" && rel != onlyPath {
+			return nil
 		}
 		hash, err := HashFile(path)
 		if err != nil {
