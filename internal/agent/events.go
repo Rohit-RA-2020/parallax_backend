@@ -17,6 +17,7 @@ const (
 	EventDone           EventType = "done"
 	EventError          EventType = "error"
 	EventProjectChanged EventType = "project_changed"
+	EventQuestions      EventType = "questions"
 )
 
 // Event is one realtime update from the agent loop.
@@ -100,4 +101,23 @@ type ProjectChangedPayload struct {
 	ProjectID       string `json:"project_id"`
 	Revision        int    `json:"revision"`
 	TimelineChanged bool   `json:"timeline_changed"`
+}
+
+type QuestionOption struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+type Question struct {
+	ID          string           `json:"id"`
+	Question    string           `json:"question"`
+	Options     []QuestionOption `json:"options"`
+	AllowCustom bool             `json:"allow_custom"`
+	MultiSelect bool             `json:"multi_select"`
+}
+
+type QuestionsPayload struct {
+	ID        string     `json:"id"`
+	Questions []Question `json:"questions"`
+	Iteration int        `json:"iteration"`
 }

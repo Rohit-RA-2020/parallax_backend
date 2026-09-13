@@ -103,6 +103,7 @@ func main() {
 		BaseURL:   cfg.GeminiBaseURL,
 		Model:     cfg.GeminiImageModel,
 	})
+	tools.RegisterQuestions(reg, tools.QuestionsEnv{})
 	projectStore, err := projects.NewPostgresStore(cfg.WorkspaceDir+"/projects", db.Pool, objects)
 	if err != nil {
 		log.Error("projects", "err", err)

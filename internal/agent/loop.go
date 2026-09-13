@@ -163,6 +163,43 @@ func (a *Agent) Run(ctx context.Context, in Input, emit Sink) Outcome {
 			return Outcome{SessionID: in.SessionID, Messages: messages, Iterations: i, Reason: reason}
 		}
 
+		// Human-in-the-loop: ask_questions pauses the loop and waits for answers.
+		// Only the first ask_questions call per turn is honored; it is a barrier.
+		if qi := indexOfTool(calls, "ask_questions"); qi >= 0 {
+			call := calls[qi]
+			res := a.executeToolCall(ctx, call, i, emit)
+			messages = append(messages, llm.Message{
+				Role:       llm.RoleTool,
+				ToolCallID: call.ID,
+				Name:       call.Function.Name,
+				Content:    clip(res.JSON(), 16<<10),
+			})
+			if !res.OK {
+				// Invalid payload: let the model retry on the next iteration.
+				continue
+			}
+			questions := questionsFromResult(res)
+			if len(questions) == 0 {
+				continue
+			}
+			// Ensure persisted history stays readable even after the live
+			// questions sheet is gone (frontend rehydrates the sheet from trace).
+			if strings.TrimSpace(messages[len(messages)-2].Content) == "" {
+				messages[len(messages)-2].Content = "I need a few details to continue:"
+			}
+			emit(NewEvent(EventQuestions, QuestionsPayload{
+				ID:        call.ID,
+				Questions: questions,
+				Iteration: i,
+			}))
+			emit(NewEvent(EventDone, DonePayload{
+				Reason:     "awaiting_user",
+				Iterations: i,
+				SessionID:  in.SessionID,
+			}))
+			return Outcome{SessionID: in.SessionID, Messages: messages, Iterations: i, Reason: "awaiting_user"}
+		}
+
 		emit(NewEvent(EventStep, StepPayload{Iteration: i, Phase: "act"}))
 		results := a.executeToolCalls(ctx, calls, i, emit)
 		for index, call := range calls {
@@ -266,4 +303,27 @@ func clipText(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+func indexOfTool(calls []llm.ToolCall, name string) int {
+	for i, c := range calls {
+		if c.Function.Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+func questionsFromResult(res tools.Result) []Question {
+	raw, err := json.Marshal(res.Output)
+	if err != nil {
+		return nil
+	}
+	var out struct {
+		Questions []Question `json:"questions"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	return out.Questions
 }

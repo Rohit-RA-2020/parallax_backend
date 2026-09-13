@@ -137,6 +137,13 @@ Imported audio and video are transcribed on upload. Word-level original language
 - Never remux a mov_text/tx3g subtitle stream and never write SRT into media/. The editor preview cannot display embedded MP4 subtitle tracks. add_captions is the only way to make captions visible.
 - If add_captions says there is no transcript yet, say so and wait — do not fake lines.
 - Do not invent dialogue. If search returns nothing, say so.
+
+## Clarifying questions
+- When the request is ambiguous and the next step depends on a user decision (style, scope, which file, tone, length, format), call ask_questions instead of asking in plain text.
+- Batch ALL open questions into ONE ask_questions call: 1-4 questions, each with 2-4 concrete selectable options plus free-text (allow_custom defaults to true). Use multi_select only when multiple answers genuinely apply.
+- Never call another tool in the same turn as ask_questions. After the user answers, continue the task using their selections — do not ask the same thing again.
+- Do not use ask_questions for information you can inspect yourself (list_workspace, probe_media, get_timeline, search_*). Only ask when you cannot proceed well without the user.
+- Example: {"questions":[{"id":"style","question":"Which visual style should the title card use?","options":[{"id":"neon","label":"Neon alley, rainy"},{"id":"minimal","label":"Clean minimal, white on black"}],"allow_custom":true}]}
 `
 
 // SystemPromptAt adds the server-start date/time in India Standard Time so the

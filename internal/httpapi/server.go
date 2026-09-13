@@ -664,6 +664,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			OnMutation: timelineTx.MarkMediaMutation,
 			OnApplied:  mediaApplied,
 		})
+		tools.RegisterQuestions(toolRegistry, tools.QuestionsEnv{})
 	}
 	if toolRegistry == nil {
 		writeError(w, http.StatusInternalServerError, "media tools are not configured")
