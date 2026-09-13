@@ -315,6 +315,72 @@ func TestLoadLLMProfilesFallback(t *testing.T) {
 	}
 }
 
+func TestLoadLLMProviderIcon(t *testing.T) {
+	t.Setenv("LLM_PROFILES", "")
+	t.Setenv("LLM_MODELS", "openai")
+	t.Setenv("LLM_OPENAI_LABEL", "OpenAI")
+	t.Setenv("LLM_OPENAI_BASE_URL", "https://api.openai.com/v1")
+	t.Setenv("LLM_OPENAI_MODELS", "gpt-4.1,gpt-4o")
+	t.Setenv("LLM_OPENAI_API_KEY", "sk-secret")
+	t.Setenv("LLM_OPENAI_PROVIDER_ICON", "/provider-icons/openai.png")
+
+	got := LoadLLMProfiles()
+	if len(got) != 2 {
+		t.Fatalf("profiles=%+v", got)
+	}
+	for _, p := range got {
+		if p.ProviderIcon != "/provider-icons/openai.png" {
+			t.Fatalf("icon did not propagate to expanded profile: %+v", p)
+		}
+	}
+
+	s := NewStore(filepath.Join(t.TempDir(), "settings.json"), got)
+	pub := s.Public()
+	if len(pub.Profiles) != 2 || pub.Profiles[0].ProviderIcon != "/provider-icons/openai.png" {
+		t.Fatalf("public profiles missing icon: %+v", pub.Profiles)
+	}
+}
+
+func TestLoadLLMProviderIconThemes(t *testing.T) {
+	t.Setenv("LLM_PROFILES", "")
+	t.Setenv("LLM_MODELS", "openai")
+	t.Setenv("LLM_OPENAI_LABEL", "OpenAI")
+	t.Setenv("LLM_OPENAI_BASE_URL", "https://api.openai.com/v1")
+	t.Setenv("LLM_OPENAI_MODELS", "gpt-4.1,gpt-4o")
+	t.Setenv("LLM_OPENAI_API_KEY", "sk-secret")
+	t.Setenv("LLM_OPENAI_PROVIDER_ICON", "/provider-icons/openai.png")
+	t.Setenv("LLM_OPENAI_PROVIDER_ICON_LIGHT", "/provider-icons/openai-light.png")
+	t.Setenv("LLM_OPENAI_PROVIDER_ICON_DARK", "/provider-icons/openai-dark.png")
+
+	got := LoadLLMProfiles()
+	if len(got) != 2 {
+		t.Fatalf("profiles=%+v", got)
+	}
+	for _, p := range got {
+		if p.ProviderIcon != "/provider-icons/openai.png" ||
+			p.ProviderIconLight != "/provider-icons/openai-light.png" ||
+			p.ProviderIconDark != "/provider-icons/openai-dark.png" {
+			t.Fatalf("themed icons did not propagate to expanded profile: %+v", p)
+		}
+	}
+
+	pub := NewStore(filepath.Join(t.TempDir(), "settings.json"), got).Public()
+	if len(pub.Profiles) != 2 ||
+		pub.Profiles[0].ProviderIconLight != "/provider-icons/openai-light.png" ||
+		pub.Profiles[0].ProviderIconDark != "/provider-icons/openai-dark.png" {
+		t.Fatalf("public profiles missing themed icons: %+v", pub.Profiles)
+	}
+}
+
+func TestLoadLLMProviderIconFromJSON(t *testing.T) {
+	t.Setenv("LLM_MODELS", "")
+	t.Setenv("LLM_PROFILES", `[{"id":"groq","label":"Groq","base_url":"https://api.groq.com/openai/v1","model":"llama-3.3-70b-versatile","api_key":"groq-secret","provider_icon":"https://cdn.example.com/groq.svg"}]`)
+	got := LoadLLMProfiles()
+	if len(got) != 1 || got[0].ProviderIcon != "https://cdn.example.com/groq.svg" {
+		t.Fatalf("profiles=%+v", got)
+	}
+}
+
 func TestLoadDotEnvDoesNotOverride(t *testing.T) {
 	t.Setenv("LLM_MODEL", "already-set")
 	dir := t.TempDir()

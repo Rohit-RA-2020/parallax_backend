@@ -199,6 +199,7 @@ func main() {
 		MaxParallelTools:        cfg.MaxParallelTools,
 		Logger:                  log,
 		Workspace:               cfg.WorkspaceDir,
+		ProviderIconsDir:        cfg.ProviderIconsDir,
 		Indexer:                 indexer,
 		Previews:                previews,
 		ElevenLabs:              elevenClient,

@@ -68,6 +68,7 @@ COPY --from=blender /opt/blender /opt/blender
 COPY scripts/transcribe.py ./scripts/transcribe.py
 COPY scripts/blender-headless-bridge.py ./scripts/blender-headless-bridge.py
 COPY data/elevenlabs-voices.json ./assets/elevenlabs-voices.json
+COPY provider-icons ./provider-icons
 
 RUN groupadd --gid 10001 parallax \
     && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/parallax parallax \

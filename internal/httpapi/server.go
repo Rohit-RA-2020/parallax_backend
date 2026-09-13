@@ -57,6 +57,7 @@ type Server struct {
 	MaxParallelTools        int
 	Logger                  *slog.Logger
 	Workspace               string
+	ProviderIconsDir        string
 	Indexer                 *transcript.Indexer
 	Previews                *preview.Builder
 	ElevenLabs              *elevenlabs.Client
@@ -248,6 +249,12 @@ func (s *Server) Handler() http.Handler {
 	}
 	mux.HandleFunc("GET /v1/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /v1/settings", s.handlePutSettings)
+	// Provider logos configured via LLM_<ID>_PROVIDER_ICON_* are served by
+	// the backend from ./provider-icons (PARALLAX_PROVIDER_ICONS_DIR).
+	// The frontend proxies /provider-icons/ here in dev (vite) and prod
+	// (nginx), so a backend-only drop-in works with no frontend rebuild.
+	mux.HandleFunc("GET /provider-icons/", s.handleProviderIcons)
+	mux.HandleFunc("HEAD /provider-icons/", s.handleProviderIcons)
 	if s.GIFs != nil {
 		mux.HandleFunc("GET /v1/gifs/search", s.handleSearchGIFs)
 	}
@@ -296,7 +303,7 @@ func (s *Server) authenticateExceptPublic(next http.Handler) http.Handler {
 	protected := s.Auth.Middleware(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
-		if path == "/health" || strings.HasPrefix(path, "/health/") || strings.HasPrefix(path, "/v1/media/") {
+		if path == "/health" || strings.HasPrefix(path, "/health/") || strings.HasPrefix(path, "/v1/media/") || strings.HasPrefix(path, "/provider-icons/") {
 			next.ServeHTTP(w, r)
 			return
 		}

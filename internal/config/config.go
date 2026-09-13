@@ -28,15 +28,22 @@ const (
 
 // LLM is one OpenAI-compatible endpoint. Config input may provide Models;
 // normalized runtime profiles always contain exactly one Model.
+// ProviderIcon is a client-side logo override shared by both themes; the
+// Light/Dark variants win for their theme when set. Each accepts an
+// https:// URL or a backend-served path such as /provider-icons/openai.png.
+// API keys are never exposed; icons are safe to publish.
 type LLM struct {
-	ID            string   `json:"id"`
-	Label         string   `json:"label,omitempty"`
-	BaseURL       string   `json:"base_url"`
-	APIKey        string   `json:"api_key"`
-	Model         string   `json:"model"`
-	Models        []string `json:"models,omitempty"`
-	ProviderID    string   `json:"-"`
-	ProviderLabel string   `json:"-"`
+	ID                string   `json:"id"`
+	Label             string   `json:"label,omitempty"`
+	BaseURL           string   `json:"base_url"`
+	APIKey            string   `json:"api_key"`
+	Model             string   `json:"model"`
+	Models            []string `json:"models,omitempty"`
+	ProviderID        string   `json:"-"`
+	ProviderLabel     string   `json:"-"`
+	ProviderIcon      string   `json:"provider_icon,omitempty"`
+	ProviderIconLight string   `json:"provider_icon_light,omitempty"`
+	ProviderIconDark  string   `json:"provider_icon_dark,omitempty"`
 }
 
 // Settings is the in-memory multi-model snapshot.
@@ -60,6 +67,7 @@ type Config struct {
 	WorkspaceDir               string
 	DataDir                    string
 	SettingsPath               string
+	ProviderIconsDir           string
 	ExaAPIKey                  string
 	ExaBaseURL                 string
 	GiphyAPIKey                string
@@ -149,6 +157,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("media storage: %w", err)
 	}
+	providerIcons, err := filepath.Abs(envOr("PARALLAX_PROVIDER_ICONS_DIR", filepath.Join(cwd, "provider-icons")))
+	if err != nil {
+		return Config{}, fmt.Errorf("provider icons: %w", err)
+	}
 
 	cfg := Config{
 		Addr:                       envOr("PARALLAX_ADDR", DefaultAddr),
@@ -164,6 +176,7 @@ func Load() (Config, error) {
 		WorkspaceDir:               workspace,
 		DataDir:                    data,
 		SettingsPath:               filepath.Join(data, "settings.json"),
+		ProviderIconsDir:           providerIcons,
 		ExaAPIKey:                  strings.TrimSpace(os.Getenv("EXA_API_KEY")),
 		ExaBaseURL:                 envOr("EXA_BASE_URL", "https://api.exa.ai"),
 		GiphyAPIKey:                strings.TrimSpace(os.Getenv("GIPHY_API_KEY")),
@@ -342,13 +355,16 @@ func envBool(name string, fallback bool) bool {
 
 // PublicProfile is the client-safe view of one configured model.
 type PublicProfile struct {
-	ID            string `json:"id"`
-	Label         string `json:"label,omitempty"`
-	ProviderID    string `json:"provider_id"`
-	ProviderLabel string `json:"provider_label,omitempty"`
-	BaseURL       string `json:"base_url"`
-	Model         string `json:"model"`
-	APIKeySet     bool   `json:"api_key_set"`
+	ID                string `json:"id"`
+	Label             string `json:"label,omitempty"`
+	ProviderID        string `json:"provider_id"`
+	ProviderLabel     string `json:"provider_label,omitempty"`
+	ProviderIcon      string `json:"provider_icon,omitempty"`
+	ProviderIconLight string `json:"provider_icon_light,omitempty"`
+	ProviderIconDark  string `json:"provider_icon_dark,omitempty"`
+	BaseURL           string `json:"base_url"`
+	Model             string `json:"model"`
+	APIKeySet         bool   `json:"api_key_set"`
 }
 
 // Public is the JSON shape returned to clients. API keys are never exposed.
@@ -363,13 +379,16 @@ type Public struct {
 
 func (l LLM) publicProfile() PublicProfile {
 	return PublicProfile{
-		ID:            l.ID,
-		Label:         l.Label,
-		ProviderID:    l.ProviderID,
-		ProviderLabel: l.ProviderLabel,
-		BaseURL:       l.BaseURL,
-		Model:         l.Model,
-		APIKeySet:     strings.TrimSpace(l.APIKey) != "",
+		ID:                l.ID,
+		Label:             l.Label,
+		ProviderID:        l.ProviderID,
+		ProviderLabel:     l.ProviderLabel,
+		ProviderIcon:      l.ProviderIcon,
+		ProviderIconLight: l.ProviderIconLight,
+		ProviderIconDark:  l.ProviderIconDark,
+		BaseURL:           l.BaseURL,
+		Model:             l.Model,
+		APIKeySet:         strings.TrimSpace(l.APIKey) != "",
 	}
 }
 
@@ -565,12 +584,15 @@ func LoadLLMProfiles() []LLM {
 			}
 			prefix := "LLM_" + envID(id)
 			out = append(out, LLM{
-				ID:      id,
-				Label:   strings.TrimSpace(os.Getenv(prefix + "_LABEL")),
-				BaseURL: strings.TrimSpace(os.Getenv(prefix + "_BASE_URL")),
-				APIKey:  firstNonEmpty(os.Getenv(prefix+"_API_KEY"), os.Getenv(prefix+"_KEY")),
-				Model:   strings.TrimSpace(os.Getenv(prefix + "_MODEL")),
-				Models:  splitModelList(os.Getenv(prefix + "_MODELS")),
+				ID:                id,
+				Label:             strings.TrimSpace(os.Getenv(prefix + "_LABEL")),
+				BaseURL:           strings.TrimSpace(os.Getenv(prefix + "_BASE_URL")),
+				APIKey:            firstNonEmpty(os.Getenv(prefix+"_API_KEY"), os.Getenv(prefix+"_KEY")),
+				Model:             strings.TrimSpace(os.Getenv(prefix + "_MODEL")),
+				Models:            splitModelList(os.Getenv(prefix + "_MODELS")),
+				ProviderIcon:      strings.TrimSpace(os.Getenv(prefix + "_PROVIDER_ICON")),
+				ProviderIconLight: strings.TrimSpace(os.Getenv(prefix + "_PROVIDER_ICON_LIGHT")),
+				ProviderIconDark:  strings.TrimSpace(os.Getenv(prefix + "_PROVIDER_ICON_DARK")),
 			})
 		}
 		if len(out) > 0 {
@@ -652,6 +674,9 @@ func normalizeProfile(l LLM, fallbackID string) LLM {
 	l.Models = splitModelList(strings.Join(l.Models, ","))
 	l.ProviderID = strings.TrimSpace(l.ProviderID)
 	l.ProviderLabel = strings.TrimSpace(l.ProviderLabel)
+	l.ProviderIcon = strings.TrimSpace(l.ProviderIcon)
+	l.ProviderIconLight = strings.TrimSpace(l.ProviderIconLight)
+	l.ProviderIconDark = strings.TrimSpace(l.ProviderIconDark)
 	return l
 }
 
