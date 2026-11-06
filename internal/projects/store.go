@@ -54,13 +54,18 @@ type Media struct {
 }
 
 type Store struct {
+	*storeState
+	ownerID uuid.UUID
+}
+
+// Owner-scoped stores share cache state and the locks protecting it.
+type storeState struct {
 	mu       sync.RWMutex
 	uploadMu sync.Mutex
 	root     string
 	data     map[string]Project
 	pg       *pgxpool.Pool
 	objects  *objectstore.Client
-	ownerID  uuid.UUID
 }
 
 // NewPostgresStore creates the production store. The root is a temporary,
@@ -76,7 +81,7 @@ func NewPostgresStore(root string, pg *pgxpool.Pool, objects *objectstore.Client
 	if err := os.MkdirAll(abs, 0o700); err != nil {
 		return nil, err
 	}
-	return &Store{root: abs, data: map[string]Project{}, pg: pg, objects: objects}, nil
+	return &Store{storeState: &storeState{root: abs, data: map[string]Project{}, pg: pg, objects: objects}}, nil
 }
 
 func (s *Store) ForOwner(owner uuid.UUID) *Store {
@@ -98,7 +103,7 @@ func NewStore(root string) (*Store, error) {
 	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return nil, err
 	}
-	s := &Store{root: abs, data: map[string]Project{}}
+	s := &Store{storeState: &storeState{root: abs, data: map[string]Project{}}}
 	entries, err := os.ReadDir(abs)
 	if err != nil {
 		return nil, err

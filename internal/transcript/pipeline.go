@@ -568,7 +568,10 @@ func (x *Indexer) transcribe(ctx context.Context, projectID, projectDir, rel, ha
 			x.flushTranslate(ctx, doc, live, batch)
 		}
 		if nseg%8 == 0 {
+			// Save updates document metadata while the live embedder snapshots it.
+			live.mu.Lock()
 			_ = Save(projectDir, doc)
+			live.mu.Unlock()
 		}
 	}
 
@@ -613,10 +616,13 @@ func (x *Indexer) transcribe(ctx context.Context, projectID, projectDir, rel, ha
 			}
 		}
 	}
-	if err := x.ensureEnglish(ctx, doc); err != nil {
+	live.mu.Lock()
+	englishErr := x.ensureEnglish(ctx, doc)
+	live.mu.Unlock()
+	if englishErr != nil {
 		_ = live.Finish()
 		_ = Save(projectDir, doc)
-		return nil, err
+		return nil, englishErr
 	}
 	for i := range doc.Segments {
 		if strings.TrimSpace(doc.Segments[i].TextEN) != "" {
