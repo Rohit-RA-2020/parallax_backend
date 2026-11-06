@@ -22,7 +22,7 @@ import (
 
 const (
 	DefaultGeminiBaseURL    = "https://generativelanguage.googleapis.com/v1beta"
-	DefaultGeminiImageModel = "gemini-3.1-flash-image"
+	DefaultGeminiImageModel = "gemini-nano-banana-2.1"
 	defaultImageTimeout     = 3 * time.Minute
 	maxImagePrompt          = 8000
 	maxImageBody            = 32 << 20
